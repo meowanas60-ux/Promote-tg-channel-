@@ -151,7 +151,7 @@ def channel_is_publish_target(entity):
     return any(username == x.replace("@", "").lower() for x in PUBLISHED_CHANNELS)
 
 async def publish_to_channels(media_path, prompt, tutorial, cid):
-    link = f"https://t.me/{BOT_USERNAME}?start=content_{cid}"
+    link = f"{PUBLIC_BASE_URL}/content/{cid}"
     caption = "✨ <b>AI Prompt & Tutorial</b>\n\nTap below to get the full prompt + guide."
     from telethon import Button
     for ch in PUBLISHED_CHANNELS:
@@ -237,7 +237,7 @@ async def telegram_handler(event):
 
         text = msg.message or ""
         prompt, tutorial = parse_prompt_tutorial(text)
-        if not prompt or not tutorial:
+        if not prompt:
             return
 
         ext = ".jpg" if kind == "photo" else ".mp4"
@@ -423,7 +423,7 @@ async def health(request):
 
 async def landing(request):
     cid = request.match_info["content_id"]
-    link = f"https://t.me/{BOT_USERNAME}?start=content_{cid}"
+    link = f"{PUBLIC_BASE_URL}/content/{cid}"
     smartlink = "https://www.profitableratecpmnetwork.com/herywwsc?key=a8803ae52732f8b9dc5b4aaf1ba40e0a"
 
     body = f"""<!doctype html>
@@ -499,6 +499,7 @@ h1{{margin-top:0;font-size:26px}}
 
 async def start_web():
     app = web.Application()
+    app.router.add_get("/", health)
     app.router.add_get("/health", health)
     app.router.add_get("/content/{content_id}", landing)
     runner = web.AppRunner(app)

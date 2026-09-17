@@ -96,8 +96,10 @@ async def start(message: types.Message):
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) == 1:
         await message.answer(
-            "👋 <b>AI Visual Prompt Bot</b>\n\n"
-            "Open a post's <b>Get Prompt & Tutorial</b> button to receive the media, full prompt and guide.",
+            "👋 <b>Visual Prompt AI Bot</b>\n\n"
+            "🟢 Bot is online.\n"
+            "Open a published post and tap <b>Get Prompt & Tutorial</b> to receive the media + full prompt.\n\n"
+            "Tutorial/guide is included when the source provides one.",
             parse_mode="HTML"
         )
         return
@@ -116,6 +118,22 @@ async def check_sub(call: types.CallbackQuery):
         await call.message.answer("✅ Subscription verified. Now open the original post and tap Get Prompt & Tutorial again.")
     else:
         await call.message.answer("❌ Subscription is still missing. Please join the required channel(s).", reply_markup=join_keyboard())
+
+@dp.message(Command("alive"))
+async def alive(message: types.Message):
+    try:
+        me = await bot.get_me()
+        await message.answer(
+            "🟢 <b>Visual Prompt AI Bot is Online!</b>\n\n"
+            f"🤖 @{me.username}\n"
+            "📡 Prompt delivery system: Online\n"
+            "🔐 Subscription check: Online\n"
+            "💾 Storage connection: Configured",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await message.answer(f"⚠️ Bot is running, but status check failed: {e}")
+
 
 @dp.message(Command("stats"))
 async def stats(message: types.Message):

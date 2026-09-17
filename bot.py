@@ -81,11 +81,15 @@ async def send_content(message: types.Message, content_id: str):
         from_chat_id=STORAGE_CHANNEL_ID,
         message_id=storage_msg_id
     )
-    await message.answer(
-        f"📝 <b>Prompt</b>\n{row['prompt']}\n\n"
-        f"📚 <b>Tutorial / Guide</b>\n{row['tutorial']}",
-        parse_mode="HTML"
-    )
+    tutorial = (row["tutorial"] or "").strip()
+    if tutorial:
+        text = (
+            f"📝 <b>Prompt</b>\n{row['prompt']}\n\n"
+            f"📚 <b>Tutorial / Guide</b>\n{tutorial}"
+        )
+    else:
+        text = f"📝 <b>Prompt</b>\n{row['prompt']}"
+    await message.answer(text, parse_mode="HTML")
 
 @dp.message(CommandStart())
 async def start(message: types.Message):

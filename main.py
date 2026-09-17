@@ -124,14 +124,18 @@ def parse_prompt_tutorial(text):
 
     pm = PROMPT_HEADINGS.search(text)
     tm = TUTORIAL_HEADINGS.search(text)
-    if not pm or not tm:
+    if not pm:
         return None, None
 
-    prompt = text[pm.end():tm.start()].strip()
-    tutorial = text[tm.end():].strip()
+    # Tutorial/guide is optional. Prompt + media are enough to publish.
+    if tm and tm.start() > pm.end():
+        prompt = text[pm.end():tm.start()].strip()
+        tutorial = text[tm.end():].strip()
+    else:
+        prompt = text[pm.end():].strip()
+        tutorial = ""
 
-    # Avoid accidentally treating a huge article as a prompt/tutorial.
-    if len(prompt) < 20 or len(tutorial) < 20:
+    if len(prompt) < 20:
         return None, None
     if len(prompt) > 12000:
         prompt = prompt[:12000].rstrip()
@@ -368,7 +372,7 @@ async def scan_web_trends():
                 main_text = soup.get_text("\n", strip=True)
                 combined = f"{title}\n{desc}\n{main_text}"
                 prompt, tutorial = parse_prompt_tutorial(combined)
-                if not prompt or not tutorial:
+                if not prompt:
                     continue
 
                 media_url = enclosure
@@ -420,15 +424,78 @@ async def health(request):
 async def landing(request):
     cid = request.match_info["content_id"]
     link = f"https://t.me/{BOT_USERNAME}?start=content_{cid}"
-    body = f"""<!doctype html><html><head>
+    smartlink = "https://www.profitableratecpmnetwork.com/herywwsc?key=a8803ae52732f8b9dc5b4aaf1ba40e0a"
+
+    body = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AI Prompt & Tutorial</title></head>
-<body style="font-family:Arial;text-align:center;padding:40px">
-<h2>AI Prompt & Tutorial</h2>
-<p>Join the required Telegram channel(s), then open the bot.</p>
-<p><a href="{html.escape(link)}">🎯 Get Prompt & Tutorial</a></p>
-</body></html>"""
+<title>AI Prompt & Tutorial</title>
+<style>
+body{{margin:0;background:#f5f7fb;color:#172033;font-family:Arial,sans-serif}}
+.wrap{{max-width:760px;margin:auto;padding:18px}}
+.card{{background:#fff;border-radius:18px;padding:20px;margin:14px 0;box-shadow:0 4px 20px rgba(0,0,0,.07)}}
+h1{{margin-top:0;font-size:26px}}
+.btn{{display:inline-block;padding:14px 22px;border-radius:12px;background:#111827;color:#fff;text-decoration:none;font-weight:700}}
+.ad{{display:flex;justify-content:center;align-items:center;min-height:90px;overflow:hidden;margin:10px 0}}
+.small{{color:#667085;font-size:13px}}
+</style>
+
+<!-- Social Bar -->
+<script src="https://pl31392177.profitableratecpmnetwork.com/e8/1f/77/e81f77dcaabfb52998ffb6fe2e50a4b8.js"></script>
+</head>
+<body>
+<div class="wrap">
+
+<div class="card">
+<h1>🎨 AI Prompt & Tutorial</h1>
+<p>Get the AI photo/video and its prompt from Telegram.</p>
+</div>
+
+<!-- Native Ad -->
+<div class="card ad">
+<script async="async" data-cfasync="false" src="https://pl31392178.profitableratecpmnetwork.com/c5399e7ba5336815e27f57a310183960/invoke.js"></script>
+<div id="container-c5399e7ba5336815e27f57a310183960"></div>
+</div>
+
+<!-- 300x250 Banner -->
+<div class="card ad">
+<script>
+  atOptions = {{
+    'key' : '27f7adc1905b29d75422693fb24c5c27',
+    'format' : 'iframe',
+    'height' : 250,
+    'width' : 300,
+    'params' : {{}}
+  }};
+</script>
+<script src="https://www.highrevenueformat.com/27f7adc1905b29d75422693fb24c5c27/invoke.js"></script>
+</div>
+
+<div class="card" style="text-align:center">
+<p><b>Step 1:</b> Join the required Telegram channel(s).</p>
+<p><b>Step 2:</b> Open the bot and receive the media + prompt.</p>
+<a class="btn" href="{html.escape(link)}">🎯 Get Prompt & Tutorial</a>
+</div>
+
+<!-- Smart Link -->
+<div class="card" style="text-align:center">
+<a class="btn" href="{smartlink}" target="_blank" rel="noopener">🔗 Continue</a>
+<p class="small">The smart link may open a third-party advertising page.</p>
+</div>
+
+<!-- Popunder -->
+<script src="https://pl31392175.profitableratecpmnetwork.com/24/9e/8f/249e8ffb48623ecc2f8419c35b6bef1b.js"></script>
+
+<div class="card small">
+<p>© AI Prompt & Tutorial</p>
+</div>
+</div>
+</body>
+</html>"""
     return web.Response(text=body, content_type="text/html")
+
 
 async def start_web():
     app = web.Application()

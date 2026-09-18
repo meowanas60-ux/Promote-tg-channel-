@@ -118,7 +118,7 @@ def save_row(data):
     con.commit()
     con.close()
 
-def parse_prompt_tutorial(text):
+def parse_prompt_tutorial(text, allow_plain=False):
     text = BeautifulSoup(text or "", "html.parser").get_text("\n")
     text = re.sub(r"\r", "", text).strip()
     if not text:
@@ -126,10 +126,11 @@ def parse_prompt_tutorial(text):
 
     pm = PROMPT_HEADINGS.search(text)
     tm = TUTORIAL_HEADINGS.search(text)
-    # A clear Prompt:/Image Prompt:/Video Prompt: heading is enough to
-    # classify the post. Otherwise require an AI-related keyword to avoid
-    # reposting unrelated channel media.
-    if not pm and not AI_WORDS.search(text):
+    # For media posts coming from the user's joined prompt channels, a plain
+    # caption is allowed: many prompt channels paste the actual prompt without
+    # writing "Prompt:" or an AI product name. For non-media text, keep the
+    # AI-keyword guard to reduce unrelated matches.
+    if not pm and not allow_plain and not AI_WORDS.search(text):
         return None, None
 
     # If a source uses a clear Prompt: heading, keep the exact section.
@@ -235,12 +236,12 @@ async def download_telegram_media(msg):
     await client.download_media(msg, file=bio)
     return bio.getvalue()
 
-async def process_telegram_media(entity, media_msg, prompt_text, tutorial_text=""):
+async def process_telegram_media(entity, media_msg, prompt_text, tutorial_text="", allow_plain_prompt=True):
     kind = media_from_telegram(media_msg)
     if not kind or not prompt_text:
         return False
 
-    prompt, tutorial = parse_prompt_tutorial(prompt_text)
+    prompt, tutorial = parse_prompt_tutorial(prompt_text, allow_plain=allow_plain_prompt)
     if not prompt:
         return False
     if tutorial_text:
@@ -307,18 +308,26 @@ async def telegram_handler(event):
             return
 
         # Case 1: photo/video and prompt are in the same caption.
+        # IMPORTANT: on joined prompt channels we accept a plain caption as the
+        # prompt. The old code rejected captions such as:
+        # "Create a cinematic, full-body portrait..." because they did not
+        # contain the literal word AI/Prompt/Midjourney/etc.
         kind = media_from_telegram(msg)
+        source_name = getattr(entity, "title", None) or getattr(entity, "username", None) or str(entity.id)
         if kind:
-            text = msg.message or ""
-            prompt, tutorial = parse_prompt_tutorial(text)
-            if prompt:
-                await process_telegram_media(entity, msg, text, tutorial)
+            text = (msg.message or "").strip()
+            print(f"📥 SOURCE: {source_name} | msg={msg.id} | media={kind} | caption_chars={len(text)}", flush=True)
+            if len(text) < 20:
+                print(f"⏭️ SKIP: {source_name} msg={msg.id} | prompt/caption too short", flush=True)
                 return
+            ok = await process_telegram_media(entity, msg, text, "", allow_plain_prompt=True)
+            print(f"{'✅ ACCEPTED' if ok else '❌ FAILED'}: {source_name} msg={msg.id}", flush=True)
+            return
 
         # Case 2: source sends the photo/video first and the prompt as the
         # next text message, or sends the prompt as a reply to the media.
         if not kind and (msg.message or ""):
-            prompt, tutorial = parse_prompt_tutorial(msg.message)
+            prompt, tutorial = parse_prompt_tutorial(msg.message, allow_plain=True)
             if not prompt:
                 return
             media_msg = None
@@ -339,7 +348,8 @@ async def telegram_handler(event):
                 except Exception:
                     pass
             if media_msg:
-                await process_telegram_media(entity, media_msg, msg.message, tutorial)
+                ok = await process_telegram_media(entity, media_msg, msg.message, tutorial, allow_plain_prompt=True)
+                print(f"{'✅ ACCEPTED' if ok else '❌ FAILED'}: {source_name} prompt msg={msg.id} media_msg={media_msg.id}", flush=True)
     except Exception as e:
         print("Telegram handler error:", repr(e), flush=True)
 
@@ -669,12 +679,17 @@ async def main():
                     print("❌ Publish target ERROR:", ch, repr(e), flush=True)
             dialogs = 0
             broadcasts = 0
+            source_names = []
             async for d in client.iter_dialogs():
                 dialogs += 1
                 ent = d.entity
                 if isinstance(ent, Channel) and not getattr(ent, "megagroup", False):
                     broadcasts += 1
-            print(f"📡 Monitoring joined broadcast channels automatically. dialogs={dialogs}, broadcasts={broadcasts}", flush=True)
+                    if utils.get_peer_id(ent) != STORAGE_CHANNEL_ID and not channel_is_publish_target(ent):
+                        source_names.append(getattr(ent, "title", None) or getattr(ent, "username", None) or str(ent.id))
+            print(f"📡 Monitoring ALL joined broadcast channels automatically. dialogs={dialogs}, broadcasts={broadcasts}, sources={len(source_names)}", flush=True)
+            for name in source_names:
+                print(f"   • SOURCE: {name}", flush=True)
             print("🌐 Web trend scanner enabled.", flush=True)
             await client.run_until_disconnected()
         except Exception as e:

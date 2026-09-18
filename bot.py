@@ -51,13 +51,12 @@ async def subscription_status(user_id: int):
         results.append((ch, await is_subscribed(user_id, ch)))
     return results
 
-def join_keyboard(content_id: str | None = None):
+def join_keyboard():
     rows = []
     for ch in PUBLISHED_CHANNELS:
         clean = ch.replace("@", "")
         rows.append([InlineKeyboardButton(text=f"Join @{clean}", url=f"https://t.me/{clean}")])
-    callback = f"check_sub:{content_id}" if content_id else "check_sub"
-    rows.append([InlineKeyboardButton(text="✅ Check Subscription", callback_data=callback)])
+    rows.append([InlineKeyboardButton(text="✅ Check Subscription", callback_data="check_sub")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 async def send_content(message: types.Message, content_id: str):
@@ -72,7 +71,7 @@ async def send_content(message: types.Message, content_id: str):
     if not ok:
         await message.answer(
             "🔒 Subscribe to the required channel(s) first, then tap Check Subscription.",
-            reply_markup=join_keyboard(content_id)
+            reply_markup=join_keyboard()
         )
         return
 
@@ -99,7 +98,7 @@ async def start(message: types.Message):
         await message.answer(
             "👋 <b>Visual Prompt AI Bot</b>\n\n"
             "🟢 Bot is online.\n"
-            "Open a published post and tap <b>Get Prompt</b> to receive the media + full prompt.\n\n"
+            "Open a published post and tap <b>Get Prompt & Tutorial</b> to receive the media + full prompt.\n\n"
             "Tutorial/guide is included when the source provides one.",
             parse_mode="HTML"
         )
@@ -110,24 +109,15 @@ async def start(message: types.Message):
     else:
         await message.answer("Use the button from a published post.")
 
-@dp.callback_query(lambda c: c.data == "check_sub" or (c.data or "").startswith("check_sub:"))
+@dp.callback_query(lambda c: c.data == "check_sub")
 async def check_sub(call: types.CallbackQuery):
     await call.answer()
     statuses = await subscription_status(call.from_user.id)
     ok = all(v for _, v in statuses) if REQUIRE_ALL_SUBSCRIPTIONS else any(v for _, v in statuses)
-    data = call.data or ""
-    content_id = data.split(":", 1)[1] if data.startswith("check_sub:") else ""
     if ok:
-        if content_id:
-            await call.message.answer("✅ Subscription verified. Sending your prompt now...")
-            await send_content(call.message, content_id)
-        else:
-            await call.message.answer("✅ Subscription verified. Open the original post and tap Get Prompt.")
+        await call.message.answer("✅ Subscription verified. Now open the original post and tap Get Prompt & Tutorial again.")
     else:
-        await call.message.answer(
-            "❌ Subscription is still missing. Please join the required channel(s).",
-            reply_markup=join_keyboard(content_id or None)
-        )
+        await call.message.answer("❌ Subscription is still missing. Please join the required channel(s).", reply_markup=join_keyboard())
 
 @dp.message(Command("alive"))
 async def alive(message: types.Message):

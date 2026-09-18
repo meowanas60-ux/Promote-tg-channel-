@@ -31,7 +31,6 @@ PUBLISHED_CHANNELS = [x.strip() for x in os.getenv(
     "@TheFramePromptOfficial,@NextGen_AI_Creates,@NextGenAICreates"
 ).split(",") if x.strip()]
 BOT_USERNAME = os.getenv("BOT_USERNAME", "VisualPromptAIBot").replace("@", "")
-TELEGRAM_BOT_URL = f"https://t.me/{BOT_USERNAME}"
 PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
 PORT = int(os.getenv("PORT", "10000"))
 DB_PATH = os.getenv("DB_PATH", "prompts.db")
@@ -122,11 +121,16 @@ def save_row(data):
 def parse_prompt_tutorial(text):
     text = BeautifulSoup(text or "", "html.parser").get_text("\n")
     text = re.sub(r"\r", "", text).strip()
-    if not text or not AI_WORDS.search(text):
+    if not text:
         return None, None
 
     pm = PROMPT_HEADINGS.search(text)
     tm = TUTORIAL_HEADINGS.search(text)
+    # A clear Prompt:/Image Prompt:/Video Prompt: heading is enough to
+    # classify the post. Otherwise require an AI-related keyword to avoid
+    # reposting unrelated channel media.
+    if not pm and not AI_WORDS.search(text):
+        return None, None
 
     # If a source uses a clear Prompt: heading, keep the exact section.
     if pm:
@@ -161,9 +165,7 @@ def channel_is_publish_target(entity):
     return any(username == x.replace("@", "").lower() for x in PUBLISHED_CHANNELS)
 
 async def publish_to_channels(media_path, prompt, tutorial, cid):
-    if not PUBLIC_BASE_URL:
-        raise RuntimeError("PUBLIC_BASE_URL or RENDER_EXTERNAL_URL is required for published buttons")
-    link = f"{PUBLIC_BASE_URL}/content/{urllib.parse.quote(cid)}"
+    link = f"{PUBLIC_BASE_URL}/content/{cid}"
     caption = "✨ <b>AI Prompt & Tutorial</b>\n\nTap below to get the full prompt + guide."
     from telethon import Button
     for ch in PUBLISHED_CHANNELS:
@@ -173,11 +175,10 @@ async def publish_to_channels(media_path, prompt, tutorial, cid):
                 media_path,
                 caption=caption,
                 parse_mode="html",
-                buttons=Button.url("🎯 Download Prompt", link),
+                buttons=Button.url("🎯 Get Prompt & Tutorial", link),
             )
-            print("✅ Published:", ch, cid)
         except Exception as e:
-            print("❌ Publish error:", ch, repr(e))
+            print("Publish error:", ch, e)
 
 async def save_and_publish(media_bytes, filename, source_type, source_chat, source_message_id,
                            prompt, tutorial, source_url=""):
@@ -190,8 +191,10 @@ async def save_and_publish(media_bytes, filename, source_type, source_chat, sour
 
     storage_caption = (
         "AI Prompt Content\n"
-        f"CONTENT_ID: {html.escape(cid)}\n"
-        f"SOURCE_TYPE: {html.escape(source_type)}"
+        f"CONTENT_ID: {cid}\n"
+        f"SOURCE_TYPE: {source_type}\n\n"
+        f"PROMPT:\n{prompt}\n\n"
+        f"TUTORIAL:\n{tutorial}"
     )
     try:
         msg = await client.send_file(
@@ -481,45 +484,35 @@ async def health(request):
     })
 
 async def home(request):
-    return web.Response(text="""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Visual Prompt AI</title><style>body{font-family:Arial;background:#111827;color:#fff;text-align:center;padding:50px}a{display:inline-block;margin:10px;padding:14px 22px;background:#fff;color:#111827;border-radius:10px;text-decoration:none;font-weight:700}</style></head><body><h1>🎨 Visual Prompt AI</h1><p>AI photo/video prompt delivery service is online.</p><a href="/health">Health Check</a><a href="https://t.me/{BOT_USERNAME}">Open Bot</a></body></html>""", content_type="text/html")
-
-def get_content_row(content_id_value):
-    con = sqlite3.connect(DB_PATH)
-    con.row_factory = sqlite3.Row
-    row = con.execute("SELECT content_id, storage_msg_id, prompt, tutorial FROM content WHERE content_id=?", (content_id_value,)).fetchone()
-    con.close()
-    return row
+    return web.Response(text="""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Visual Prompt AI</title><style>body{font-family:Arial;background:#111827;color:#fff;text-align:center;padding:50px}a{display:inline-block;margin:10px;padding:14px 22px;background:#fff;color:#111827;border-radius:10px;text-decoration:none;font-weight:700}</style></head><body><h1>🎨 Visual Prompt AI</h1><p>AI photo/video prompt delivery service is online.</p><a href="/health">Health Check</a><a href="https://t.me/VisualPromptAIBot">Open Bot</a></body></html>""", content_type="text/html")
 
 async def landing(request):
     cid = request.match_info["content_id"]
-    row = get_content_row(cid)
-    if not row:
-        return web.Response(status=404, text="Content not found", content_type="text/plain")
-
-    smartlink = os.getenv(
-        "ADISTRA_SMARTLINK",
-        "https://www.profitableratecpmnetwork.com/herywwsc?key=a8803ae52732f8b9dc5b4aaf1ba40e0a"
-    )
     bot_link = f"https://t.me/{BOT_USERNAME}?start=content_{urllib.parse.quote(cid)}"
+    smartlink = "https://www.profitableratecpmnetwork.com/herywwsc?key=a8803ae52732f8b9dc5b4aaf1ba40e0a"
 
-    # The ad scripts are supplied by the site owner. They may be blocked by
-    # browser extensions, consent settings, or the ad network itself.
     body = f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AI Prompt & Tutorial</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name="theme-color" content="#0b1020">
+<title>Visual Prompt AI — Download Prompt</title>
 <style>
-body{{margin:0;background:#f5f7fb;color:#172033;font-family:Arial,sans-serif}}
-.wrap{{max-width:760px;margin:auto;padding:18px}}
-.card{{background:#fff;border-radius:18px;padding:20px;margin:14px 0;box-shadow:0 4px 20px rgba(0,0,0,.07)}}
-h1{{margin-top:0;font-size:26px}}
-.btn{{display:inline-block;padding:14px 22px;border-radius:12px;background:#111827;color:#fff;text-decoration:none;font-weight:700;cursor:pointer;border:0}}
-.btn.secondary{{background:#2563eb}}
-.ad{{display:flex;justify-content:center;align-items:center;min-height:90px;overflow:hidden;margin:10px 0}}
-.small{{color:#667085;font-size:13px}}
-.note{{background:#eef4ff;border-radius:12px;padding:12px;font-size:14px}}
+*{{box-sizing:border-box}}
+body{{margin:0;background:linear-gradient(180deg,#070b16,#111827 55%,#0b1020);color:#fff;font-family:Inter,Arial,sans-serif}}
+.wrap{{max-width:720px;margin:auto;padding:18px 14px 40px}}
+.hero{{padding:26px 18px;text-align:center}}
+.logo{{width:64px;height:64px;border-radius:20px;margin:0 auto 14px;background:linear-gradient(135deg,#7c3aed,#06b6d4);display:flex;align-items:center;justify-content:center;font-size:31px;box-shadow:0 10px 35px rgba(124,58,237,.3)}}
+h1{{font-size:28px;margin:8px 0}} .sub{{color:#aeb8ca;font-size:14px;line-height:1.6}}
+.card{{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.10);border-radius:20px;padding:18px;margin:14px 0;backdrop-filter:blur(10px)}}
+.ad{{display:flex;justify-content:center;align-items:center;min-height:90px;overflow:hidden}}
+.ad-label{{font-size:10px;color:#75809a;text-align:center;letter-spacing:1px;margin-bottom:8px}}
+.download{{width:100%;border:0;border-radius:15px;padding:17px 20px;background:linear-gradient(90deg,#7c3aed,#2563eb);color:#fff;font-size:17px;font-weight:800;cursor:pointer;box-shadow:0 12px 28px rgba(37,99,235,.28)}}
+.download:active{{transform:scale(.98)}}
+.step{{display:flex;gap:12px;align-items:flex-start;margin:13px 0}} .num{{min-width:30px;height:30px;border-radius:50%;background:#24304a;display:flex;align-items:center;justify-content:center;font-weight:800}}
+.note{{font-size:12px;color:#8f9bb1;line-height:1.55;text-align:center}}
+footer{{text-align:center;color:#667085;font-size:11px;padding-top:8px}}
 </style>
 
 <!-- Adsterra Social Bar -->
@@ -528,71 +521,91 @@ h1{{margin-top:0;font-size:26px}}
 <body>
 <div class="wrap">
 
-<div class="card">
-<h1>🎨 AI Prompt & Tutorial</h1>
-<p>Get the AI photo/video and its prompt through Telegram.</p>
-<div class="note">First tap <b>Download Prompt</b> to open the ad page. Then tap the same button again to continue to Telegram.</div>
-</div>
+<section class="hero">
+  <div class="logo">✨</div>
+  <h1>Visual Prompt AI</h1>
+  <div class="sub">Get the original AI photo/video prompt and tutorial directly through Telegram.</div>
+</section>
 
-<!-- Adsterra Native Banner -->
-<div class="card ad">
-<script async="async" data-cfasync="false" src="https://pl31392178.profitableratecpmnetwork.com/c5399e7ba5336815e27f57a310183960/invoke.js"></script>
-<div id="container-c5399e7ba5336815e27f57a310183960"></div>
+<!-- Native Ad -->
+<div class="card">
+  <div class="ad-label">ADVERTISEMENT</div>
+  <div class="ad">
+    <script async="async" data-cfasync="false" src="https://pl31392178.profitableratecpmnetwork.com/c5399e7ba5336815e27f57a310183960/invoke.js"></script>
+    <div id="container-c5399e7ba5336815e27f57a310183960"></div>
+  </div>
 </div>
 
 <!-- 300x250 Banner -->
-<div class="card ad">
-<script>
-  atOptions = {{
-    'key' : '27f7adc1905b29d75422693fb24c5c27',
-    'format' : 'iframe',
-    'height' : 250,
-    'width' : 300,
-    'params' : {{}}
-  }};
-</script>
-<script src="https://www.highrevenueformat.com/27f7adc1905b29d75422693fb24c5c27/invoke.js"></script>
+<div class="card">
+  <div class="ad-label">ADVERTISEMENT</div>
+  <div class="ad" style="min-height:250px">
+    <script>
+      atOptions = {{
+        'key' : '27f7adc1905b29d75422693fb24c5c27',
+        'format' : 'iframe',
+        'height' : 250,
+        'width' : 300,
+        'params' : {{}}
+      }};
+    </script>
+    <script src="https://www.highrevenueformat.com/27f7adc1905b29d75422693fb24c5c27/invoke.js"></script>
+  </div>
+</div>
+
+<div class="card">
+  <div class="step"><div class="num">1</div><div><b>First download click</b><br><span class="sub">Your download request opens the advertising smartlink.</span></div></div>
+  <div class="step"><div class="num">2</div><div><b>Second download click</b><br><span class="sub">Continue to Telegram Bot for the content.</span></div></div>
 </div>
 
 <div class="card" style="text-align:center">
-<p><b>Step 1:</b> Tap the button once to open the smart-link ad.</p>
-<p><b>Step 2:</b> Return to this page and tap again to open Telegram.</p>
-<a id="downloadBtn" class="btn secondary" href="{html.escape(smartlink, quote=True)}" target="_blank" rel="noopener noreferrer">🎯 Download Prompt</a>
-<p id="status" class="small">First click opens the ad. Second click opens the Telegram bot.</p>
+  <button id="downloadBtn" class="download">🎯 Download Prompt</button>
+  <p id="hint" class="note">First click opens the Smartlink. Come back here and click again to open the Telegram bot.</p>
 </div>
 
 <!-- Adsterra Popunder -->
 <script src="https://pl31392175.profitableratecpmnetwork.com/24/9e/8f/249e8ffb48623ecc2f8419c35b6bef1b.js"></script>
 
-<div class="card small">
-<p>© AI Prompt & Tutorial</p>
+<div class="card note">
+  🔐 Your prompt is delivered by <b>@{html.escape(BOT_USERNAME)}</b> after the required Telegram subscription is verified.
 </div>
+
+<footer>© Visual Prompt AI</footer>
 </div>
 
 <script>
-(function() {{
-  const btn = document.getElementById('downloadBtn');
-  const status = document.getElementById('status');
-  let firstClickDone = false;
-  const smartLink = {smartlink!r};
-  const botLink = {bot_link!r};
+(function(){{
+  const key = "visual_prompt_download_{html.escape(cid)}";
+  const btn = document.getElementById("downloadBtn");
+  const hint = document.getElementById("hint");
+  let firstDone = false;
+  try {{ firstDone = localStorage.getItem(key) === "1"; }} catch(e) {{}}
 
-  btn.addEventListener('click', function(event) {{
-    if (!firstClickDone) {{
-      event.preventDefault();
-      firstClickDone = true;
-      window.open(smartLink, '_blank', 'noopener,noreferrer');
-      btn.href = botLink;
-      btn.textContent = '🤖 Download Prompt from Telegram';
-      status.textContent = 'Ad page opened. Tap the button again to continue to Telegram.';
+  function setFirstDone() {{
+    firstDone = true;
+    try {{ localStorage.setItem(key, "1"); }} catch(e) {{}}
+  }}
+
+  if (firstDone) {{
+    btn.textContent = "🚀 Get Prompt in Telegram";
+    hint.textContent = "Smartlink step completed. Tap again to continue to Telegram Bot.";
+  }}
+
+  btn.addEventListener("click", function() {{
+    if (!firstDone) {{
+      setFirstDone();
+      btn.textContent = "🚀 Get Prompt in Telegram";
+      hint.textContent = "Smartlink opened. Return here and tap again to continue to Telegram Bot.";
+      window.open({json.dumps(smartlink)}, "_blank", "noopener");
+      return;
     }}
+    window.location.href = {json.dumps(bot_link)};
   }});
 }})();
 </script>
 </body>
 </html>"""
     return web.Response(text=body, content_type="text/html")
-
 
 async def start_web():
     app = web.Application()
@@ -608,8 +621,6 @@ async def start_web():
 
 async def main():
     init_db()
-    if not PUBLIC_BASE_URL:
-        print("⚠️ PUBLIC_BASE_URL/RENDER_EXTERNAL_URL is not set; published Telegram buttons cannot work until it is configured.")
     # Start HTTP first so Render's health check has a live endpoint even if
     # the Telethon session needs to reconnect.
     await start_web()

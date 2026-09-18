@@ -17,6 +17,8 @@ from dotenv import load_dotenv
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.types import Channel
+from telethon import utils
+from io import BytesIO
 
 load_dotenv()
 
@@ -29,7 +31,7 @@ PUBLISHED_CHANNELS = [x.strip() for x in os.getenv(
     "@TheFramePromptOfficial,@NextGen_AI_Creates,@NextGenAICreates"
 ).split(",") if x.strip()]
 BOT_USERNAME = os.getenv("BOT_USERNAME", "VisualPromptAIBot").replace("@", "")
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
 PORT = int(os.getenv("PORT", "10000"))
 DB_PATH = os.getenv("DB_PATH", "prompts.db")
 
@@ -124,16 +126,23 @@ def parse_prompt_tutorial(text):
 
     pm = PROMPT_HEADINGS.search(text)
     tm = TUTORIAL_HEADINGS.search(text)
-    if not pm:
-        return None, None
 
-    # Tutorial/guide is optional. Prompt + media are enough to publish.
-    if tm and tm.start() > pm.end():
-        prompt = text[pm.end():tm.start()].strip()
-        tutorial = text[tm.end():].strip()
+    # If a source uses a clear Prompt: heading, keep the exact section.
+    if pm:
+        if tm and tm.start() > pm.end():
+            prompt = text[pm.end():tm.start()].strip()
+            tutorial = text[tm.end():].strip()
+        else:
+            prompt = text[pm.end():].strip()
+            tutorial = ""
     else:
-        prompt = text[pm.end():].strip()
+        # Many Telegram prompt channels simply paste the prompt without a
+        # "Prompt:" heading. For a media post, AI-looking text is sufficient.
+        prompt = text
         tutorial = ""
+        if tm:
+            tutorial = text[tm.end():].strip()
+            prompt = text[:tm.start()].strip()
 
     if len(prompt) < 20:
         return None, None
@@ -214,6 +223,40 @@ def media_from_telegram(msg):
             return "video"
     return None
 
+async def download_telegram_media(msg):
+    # BytesIO is reliable across Telethon versions and avoids passing the
+    # built-in bytes type as a pseudo file object.
+    bio = BytesIO()
+    await client.download_media(msg, file=bio)
+    return bio.getvalue()
+
+async def process_telegram_media(entity, media_msg, prompt_text, tutorial_text=""):
+    kind = media_from_telegram(media_msg)
+    if not kind or not prompt_text:
+        return False
+
+    prompt, tutorial = parse_prompt_tutorial(prompt_text)
+    if not prompt:
+        return False
+    if tutorial_text:
+        _, parsed_tutorial = parse_prompt_tutorial(tutorial_text)
+        if parsed_tutorial:
+            tutorial = parsed_tutorial
+        elif len(tutorial_text.strip()) >= 20:
+            tutorial = tutorial_text.strip()[:12000]
+
+    data = await download_telegram_media(media_msg)
+    if not data:
+        return False
+    ext = ".jpg" if kind == "photo" else ".mp4"
+    username = getattr(entity, "username", None)
+    source_chat = username or entity.id
+    source_url = f"https://t.me/{username}/{media_msg.id}" if username else ""
+    return await save_and_publish(
+        data, f"telegram_{media_msg.id}{ext}", "telegram", source_chat,
+        media_msg.id, prompt, tutorial, source_url
+    )
+
 @client.on(events.NewMessage)
 async def telegram_handler(event):
     try:
@@ -223,37 +266,50 @@ async def telegram_handler(event):
         entity = await event.get_chat()
         if not isinstance(entity, Channel):
             return
-        # Ignore groups/supergroups; only broadcast channels.
         if getattr(entity, "megagroup", False):
             return
-        if entity.id == abs(STORAGE_CHANNEL_ID):
+
+        # Telethon channel entity IDs are positive; get_peer_id() gives the
+        # normal -100... form used by Telegram config.
+        if utils.get_peer_id(entity) == STORAGE_CHANNEL_ID:
             return
         if channel_is_publish_target(entity):
             return
 
+        # Case 1: photo/video and prompt are in the same caption.
         kind = media_from_telegram(msg)
-        if not kind:
-            return
+        if kind:
+            text = msg.message or ""
+            prompt, tutorial = parse_prompt_tutorial(text)
+            if prompt:
+                await process_telegram_media(entity, msg, text, tutorial)
+                return
 
-        text = msg.message or ""
-        prompt, tutorial = parse_prompt_tutorial(text)
-        if not prompt:
-            return
-
-        ext = ".jpg" if kind == "photo" else ".mp4"
-        data = await client.download_media(msg, file=bytes)
-        if not data:
-            return
-        await save_and_publish(
-            data,
-            f"telegram_{msg.id}{ext}",
-            "telegram",
-            getattr(entity, "username", None) or entity.id,
-            msg.id,
-            prompt,
-            tutorial,
-            f"https://t.me/{entity.username}/{msg.id}" if getattr(entity, "username", None) else ""
-        )
+        # Case 2: source sends the photo/video first and the prompt as the
+        # next text message, or sends the prompt as a reply to the media.
+        if not kind and (msg.message or ""):
+            prompt, tutorial = parse_prompt_tutorial(msg.message)
+            if not prompt:
+                return
+            media_msg = None
+            if getattr(msg, "reply_to_msg_id", None):
+                try:
+                    candidate = await client.get_messages(entity, ids=msg.reply_to_msg_id)
+                    if candidate and media_from_telegram(candidate):
+                        media_msg = candidate
+                except Exception:
+                    pass
+            if media_msg is None:
+                try:
+                    previous = await client.get_messages(entity, limit=2)
+                    for candidate in previous:
+                        if candidate.id != msg.id and media_from_telegram(candidate):
+                            media_msg = candidate
+                            break
+                except Exception:
+                    pass
+            if media_msg:
+                await process_telegram_media(entity, media_msg, msg.message, tutorial)
     except Exception as e:
         print("Telegram handler error:", repr(e))
 
@@ -416,10 +472,14 @@ async def web_trend_loop():
 async def health(request):
     return web.json_response({
         "ok": True,
+        "service": "Visual Prompt AI",
         "telegram_monitor": True,
         "web_trend_scanner": True,
         "web_scan_interval_seconds": TREND_SCAN_INTERVAL
     })
+
+async def home(request):
+    return web.Response(text="""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Visual Prompt AI</title><style>body{font-family:Arial;background:#111827;color:#fff;text-align:center;padding:50px}a{display:inline-block;margin:10px;padding:14px 22px;background:#fff;color:#111827;border-radius:10px;text-decoration:none;font-weight:700}</style></head><body><h1>🎨 Visual Prompt AI</h1><p>AI photo/video prompt delivery service is online.</p><a href="/health">Health Check</a><a href="https://t.me/VisualPromptAIBot">Open Bot</a></body></html>""", content_type="text/html")
 
 async def landing(request):
     cid = request.match_info["content_id"]
@@ -499,7 +559,7 @@ h1{{margin-top:0;font-size:26px}}
 
 async def start_web():
     app = web.Application()
-    app.router.add_get("/", health)
+    app.router.add_get("/", home)
     app.router.add_get("/health", health)
     app.router.add_get("/content/{content_id}", landing)
     runner = web.AppRunner(app)
@@ -511,14 +571,22 @@ async def start_web():
 
 async def main():
     init_db()
-    await client.start()
-    me = await client.get_me()
-    print("✅ Telegram user client online:", getattr(me, "username", None) or me.id)
+    # Start HTTP first so Render's health check has a live endpoint even if
+    # the Telethon session needs to reconnect.
     await start_web()
     asyncio.create_task(web_trend_loop())
-    print("📡 Monitoring every joined broadcast channel automatically.")
-    print("🌐 Web trend scanner enabled.")
-    await client.run_until_disconnected()
+
+    while True:
+        try:
+            await client.start()
+            me = await client.get_me()
+            print("✅ Telegram user client online:", getattr(me, "username", None) or me.id)
+            print("📡 Monitoring every joined broadcast channel automatically.")
+            print("🌐 Web trend scanner enabled.")
+            await client.run_until_disconnected()
+        except Exception as e:
+            print("❌ Telegram client error:", repr(e))
+            await asyncio.sleep(15)
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -176,7 +176,7 @@ async def publish_to_channels(media_path, prompt, tutorial, cid):
                 media_path,
                 caption=caption,
                 parse_mode="html",
-                buttons=Button.url("⬇️ Download APK", link),
+                buttons=[[Button.url("⬇️ Download APK", link)]],
             )
         except Exception as e:
             print("Publish error:", ch, repr(e), flush=True)

@@ -176,7 +176,7 @@ async def publish_to_channels(media_path, prompt, tutorial, cid):
                 media_path,
                 caption=caption,
                 parse_mode="html",
-                buttons=Button.url("🎯 Get Prompt & Tutorial", link),
+                buttons=Button.url("⬇️ Download APK", link),
             )
         except Exception as e:
             print("Publish error:", ch, repr(e), flush=True)
@@ -532,7 +532,7 @@ async def landing(request):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <meta name="theme-color" content="#0b1020">
-<title>Visual Prompt AI — Download Prompt</title>
+<title>Visual Prompt AI — Download</title>
 <style>
 *{{box-sizing:border-box}}
 body{{margin:0;background:linear-gradient(180deg,#070b16,#111827 55%,#0b1020);color:#fff;font-family:Inter,Arial,sans-serif}}
@@ -559,7 +559,7 @@ footer{{text-align:center;color:#667085;font-size:11px;padding-top:8px}}
 <section class="hero">
   <div class="logo">✨</div>
   <h1>Visual Prompt AI</h1>
-  <div class="sub">Get the original AI photo/video prompt and tutorial directly through Telegram.</div>
+  <div class="sub">Get the original AI photo/video with the full prompt and tutorial through Telegram.</div>
 </section>
 
 <!-- Native Ad -->
@@ -589,13 +589,13 @@ footer{{text-align:center;color:#667085;font-size:11px;padding-top:8px}}
 </div>
 
 <div class="card">
-  <div class="step"><div class="num">1</div><div><b>First download click</b><br><span class="sub">Your download request opens the advertising smartlink.</span></div></div>
-  <div class="step"><div class="num">2</div><div><b>Second download click</b><br><span class="sub">Continue to Telegram Bot for the content.</span></div></div>
+  <div class="step"><div class="num">1</div><div><b>Download APK</b><br><span class="sub">Tap the download button to open the advertising Smartlink.</span></div></div>
+  <div class="step"><div class="num">2</div><div><b>Continue Download</b><br><span class="sub">Return here and continue to the Telegram Bot for the photo/video + full prompt.</span></div></div>
 </div>
 
 <div class="card" style="text-align:center">
-  <button id="downloadBtn" class="download">🎯 Download Prompt</button>
-  <p id="hint" class="note">First click opens the Smartlink. Come back here and click again to open the Telegram bot.</p>
+  <button id="downloadBtn" class="download">⬇️ Download APK</button>
+  <p id="hint" class="note">Tap Download APK to open the Smartlink. Return here and tap Continue Download.</p>
 </div>
 
 <!-- Adsterra Popunder -->
@@ -622,15 +622,15 @@ footer{{text-align:center;color:#667085;font-size:11px;padding-top:8px}}
   }}
 
   if (firstDone) {{
-    btn.textContent = "🚀 Get Prompt in Telegram";
-    hint.textContent = "Smartlink step completed. Tap again to continue to Telegram Bot.";
+    btn.textContent = "➡️ Continue Download";
+    hint.textContent = "Smartlink step completed. Tap Continue Download to open the Telegram Bot.";
   }}
 
   btn.addEventListener("click", function() {{
     if (!firstDone) {{
       setFirstDone();
-      btn.textContent = "🚀 Get Prompt in Telegram";
-      hint.textContent = "Smartlink opened. Return here and tap again to continue to Telegram Bot.";
+      btn.textContent = "➡️ Continue Download";
+      hint.textContent = "Smartlink opened. Return here and tap Continue Download to open the Telegram Bot.";
       window.open({json.dumps(smartlink)}, "_blank", "noopener");
       return;
     }}

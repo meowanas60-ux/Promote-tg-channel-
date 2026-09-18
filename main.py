@@ -146,7 +146,7 @@ def parse_prompt_tutorial(text):
             tutorial = text[tm.end():].strip()
             prompt = text[:tm.start()].strip()
 
-    if len(prompt) < 20:
+    if len(prompt) < 5:
         return None, None
     if len(prompt) > 12000:
         prompt = prompt[:12000].rstrip()
@@ -162,7 +162,7 @@ def channel_is_publish_target(entity):
     return any(username == x.replace("@", "").lower() for x in PUBLISHED_CHANNELS)
 
 def build_post_caption(prompt, tutorial):
-    kind = "🎬 AI VIDEO PROMPT" if re.search(r"(video|kling|runway|veo|sora)", prompt or "", re.I) else "🖼️ AI IMAGE PROMPT"
+    kind = "🎬 AI VIDEO PROMPT" if re.search(r"\b(video|kling|runway|veo|sora)\b", prompt or "", re.I) else "🖼️ AI IMAGE PROMPT"
     has_guide = bool((tutorial or "").strip())
     guide_line = "📚 Full tutorial included" if has_guide else "🧠 Full prompt included"
     return (
@@ -177,7 +177,7 @@ def build_post_caption(prompt, tutorial):
 async def publish_to_channels(media_path, prompt, tutorial, cid):
     landing_url = f"{PUBLIC_BASE_URL}/content/{cid}"
     if not PUBLIC_BASE_URL:
-        print("❌ PUBLIC_BASE_URL is empty; cannot create landing URL.")
+        print("❌ PUBLIC_BASE_URL is empty; cannot create landing URL.", flush=True)
         return
 
     from telethon import Button
@@ -186,19 +186,27 @@ async def publish_to_channels(media_path, prompt, tutorial, cid):
 
     for ch in PUBLISHED_CHANNELS:
         try:
-            print(f"📤 Publishing to {ch} -> professional post + button")
-            msg = await client.send_file(
-                ch,
-                media_path,
-                caption=caption,
-                parse_mode="html",
-                buttons=buttons,
-                force_document=False,
+            print(f"📤 Publishing to {ch} -> professional post + button", flush=True)
+            msg = await asyncio.wait_for(
+                client.send_file(
+                    ch,
+                    media_path,
+                    caption=caption,
+                    parse_mode="html",
+                    buttons=buttons,
+                    force_document=False,
+                ),
+                timeout=30,
             )
             mid = getattr(msg, "id", None)
-            print(f"✅ Published to {ch} (message_id={mid}, button_url={landing_url})")
+            print(
+                f"✅ Published to {ch} (message_id={mid}, button_url={landing_url})",
+                flush=True
+            )
+        except asyncio.TimeoutError:
+            print(f"⏱️ Publish timeout on {ch}; skipped so next channels/posts can continue.", flush=True)
         except Exception as e:
-            print(f"❌ Publish error {ch}: {repr(e)}")
+            print(f"❌ Publish error {ch}: {repr(e)}", flush=True)
 
 async def save_and_publish(media_bytes, filename, source_type, source_chat, source_message_id,
                            prompt, tutorial, source_url=""):
@@ -729,11 +737,16 @@ async def start_web():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"🌍 Web server listening on {PORT} | landing + media preview enabled")
+    print(f"🌍 Web server listening on {PORT} | landing + media preview enabled", flush=True)
     return runner
 
 async def main():
     init_db()
+    print(
+        f"⚙️ Config: targets={PUBLISHED_CHANNELS} | "
+        f"base_url={PUBLIC_BASE_URL or 'MISSING'} | port={PORT}",
+        flush=True,
+    )
     # Start HTTP first so Render's health check has a live endpoint even if
     # the Telethon session needs to reconnect.
     await start_web()
@@ -743,12 +756,12 @@ async def main():
         try:
             await client.start()
             me = await client.get_me()
-            print("✅ Telegram user client online:", getattr(me, "username", None) or me.id)
-            print("📡 Monitoring every joined broadcast channel automatically.")
-            print("🌐 Web trend scanner enabled.")
+            print("✅ Telegram user client online:", getattr(me, "username", None) or me.id, flush=True)
+            print("📡 Monitoring every joined broadcast channel automatically.", flush=True)
+            print("🌐 Web trend scanner enabled.", flush=True)
             await client.run_until_disconnected()
         except Exception as e:
-            print("❌ Telegram client error:", repr(e))
+            print("❌ Telegram client error:", repr(e), flush=True)
             await asyncio.sleep(15)
 
 if __name__ == "__main__":

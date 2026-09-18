@@ -1,5 +1,4 @@
 import asyncio
-import html
 import os
 import sqlite3
 from aiogram import Bot, Dispatcher, types
@@ -83,14 +82,13 @@ async def send_content(message: types.Message, content_id: str):
         message_id=storage_msg_id
     )
     tutorial = (row["tutorial"] or "").strip()
-    prompt = html.escape((row["prompt"] or "").strip())
     if tutorial:
         text = (
-            f"📝 <b>Prompt</b>\n{prompt}\n\n"
-            f"📚 <b>Tutorial / Guide</b>\n{html.escape(tutorial)}"
+            f"📝 <b>Prompt</b>\n{row['prompt']}\n\n"
+            f"📚 <b>Tutorial / Guide</b>\n{tutorial}"
         )
     else:
-        text = f"📝 <b>Prompt</b>\n{prompt}"
+        text = f"📝 <b>Prompt</b>\n{row['prompt']}"
     await message.answer(text, parse_mode="HTML")
 
 @dp.message(CommandStart())
@@ -119,26 +117,18 @@ async def check_sub(call: types.CallbackQuery):
     if ok:
         await call.message.answer("✅ Subscription verified. Now open the original post and tap Get Prompt & Tutorial again.")
     else:
-        missing = [ch for ch, subscribed in statuses if not subscribed]
-        missing_text = "\n".join(f"• {ch}" for ch in missing)
-        await call.message.answer(
-            "❌ Subscription is still missing.\n\nRequired channel(s):\n" + missing_text,
-            reply_markup=join_keyboard()
-        )
+        await call.message.answer("❌ Subscription is still missing. Please join the required channel(s).", reply_markup=join_keyboard())
 
 @dp.message(Command("alive"))
 async def alive(message: types.Message):
     try:
         me = await bot.get_me()
-        con = db()
-        con.execute("SELECT 1").fetchone()
-        con.close()
         await message.answer(
             "🟢 <b>Visual Prompt AI Bot is Online!</b>\n\n"
             f"🤖 @{me.username}\n"
             "📡 Prompt delivery system: Online\n"
             "🔐 Subscription check: Online\n"
-            "💾 Storage database: Online",
+            "💾 Storage connection: Configured",
             parse_mode="HTML"
         )
     except Exception as e:

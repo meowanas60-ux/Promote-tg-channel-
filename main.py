@@ -119,9 +119,14 @@ def save_row(data):
     con.close()
 
 def parse_prompt_tutorial(text):
+    """
+    Category-agnostic parser.
+    The previous version required an AI keyword, which caused posts from
+    other categories to be silently discarded.
+    """
     text = BeautifulSoup(text or "", "html.parser").get_text("\n")
     text = re.sub(r"\r", "", text).strip()
-    if not text or not AI_WORDS.search(text):
+    if not text:
         return None, None
 
     pm = PROMPT_HEADINGS.search(text)
@@ -144,7 +149,7 @@ def parse_prompt_tutorial(text):
             tutorial = text[tm.end():].strip()
             prompt = text[:tm.start()].strip()
 
-    if len(prompt) < 20:
+    if len(prompt) < 5:
         return None, None
     if len(prompt) > 12000:
         prompt = prompt[:12000].rstrip()
@@ -160,20 +165,35 @@ def channel_is_publish_target(entity):
     return any(username == x.replace("@", "").lower() for x in PUBLISHED_CHANNELS)
 
 async def publish_to_channels(media_path, prompt, tutorial, cid):
-    link = f"{PUBLIC_BASE_URL}/content/{cid}"
+    if not PUBLIC_BASE_URL:
+        print("⚠️ PUBLIC_BASE_URL is empty; landing-page button will be invalid.")
+
+    link = f"{PUBLIC_BASE_URL}/content/{cid}" if PUBLIC_BASE_URL else f"/content/{cid}"
     caption = "✨ <b>AI Prompt & Tutorial</b>\n\nTap below to get the full prompt + guide."
     from telethon import Button
+
+    success = 0
     for ch in PUBLISHED_CHANNELS:
         try:
+            entity = await client.get_entity(ch)
+            title = getattr(entity, "title", None) or getattr(entity, "username", None) or str(entity.id)
+            print(f"📤 Publishing to {ch} -> {title}")
             await client.send_file(
-                ch,
+                entity,
                 media_path,
                 caption=caption,
                 parse_mode="html",
                 buttons=Button.url("🎯 Get Prompt & Tutorial", link),
             )
+            success += 1
+            print(f"✅ Published to {ch} (cid={cid})")
         except Exception as e:
-            print("Publish error:", ch, e)
+            print(f"❌ Publish error: {ch}: {type(e).__name__}: {e}")
+
+    if success == 0:
+        print("❌ Publish failed for ALL configured PUBLISHED_CHANNELS.")
+    return success > 0
+
 
 async def save_and_publish(media_bytes, filename, source_type, source_chat, source_message_id,
                            prompt, tutorial, source_url=""):
@@ -204,8 +224,10 @@ async def save_and_publish(media_bytes, filename, source_type, source_chat, sour
             prompt, tutorial, "", source_url,
             datetime.now(timezone.utc).isoformat()
         ))
-        await publish_to_channels(str(temp), prompt, tutorial, cid)
-        return True
+        published = await publish_to_channels(str(temp), prompt, tutorial, cid)
+        if not published:
+            print(f"⚠️ Stored {cid}, but no destination channel accepted the publication.")
+        return published
     finally:
         try:
             temp.unlink()
@@ -569,6 +591,62 @@ async def start_web():
     print(f"🌍 Web server listening on {PORT}")
     return runner
 
+async def verify_publish_targets():
+    print("🔎 Checking configured publish channels...")
+    for ch in PUBLISHED_CHANNELS:
+        try:
+            entity = await client.get_entity(ch)
+            title = getattr(entity, "title", None) or getattr(entity, "username", None) or str(entity.id)
+            print(f"✅ Publish target reachable: {ch} -> {title}")
+        except Exception as e:
+            print(f"❌ Publish target NOT reachable: {ch}: {type(e).__name__}: {e}")
+
+
+async def startup_scan():
+    limit = int(os.getenv("STARTUP_SCAN_LIMIT", "0"))
+    if limit <= 0:
+        return
+
+    print(f"🔁 Startup scan enabled: last {limit} messages per joined broadcast channel")
+    async for dialog in client.iter_dialogs():
+        entity = dialog.entity
+        if not isinstance(entity, Channel):
+            continue
+        if getattr(entity, "megagroup", False):
+            continue
+        if utils.get_peer_id(entity) == STORAGE_CHANNEL_ID:
+            continue
+        if channel_is_publish_target(entity):
+            continue
+
+        try:
+            async for msg in client.iter_messages(entity, limit=limit):
+                kind = media_from_telegram(msg)
+                text = msg.message or ""
+                if not kind and not text.strip():
+                    continue
+
+                if kind:
+                    prompt, tutorial = parse_prompt_tutorial(text)
+                    if prompt:
+                        await process_telegram_media(entity, msg, text, tutorial)
+                else:
+                    prompt, tutorial = parse_prompt_tutorial(text)
+                    if not prompt:
+                        continue
+                    media_msg = None
+                    if getattr(msg, "reply_to_msg_id", None):
+                        try:
+                            candidate = await client.get_messages(entity, ids=msg.reply_to_msg_id)
+                            if candidate and media_from_telegram(candidate):
+                                media_msg = candidate
+                        except Exception:
+                            pass
+                    if media_msg:
+                        await process_telegram_media(entity, media_msg, msg.message, tutorial)
+        except Exception as e:
+            print(f"⚠️ Startup scan error in {getattr(entity, 'username', entity.id)}: {e}")
+
 async def main():
     init_db()
     # Start HTTP first so Render's health check has a live endpoint even if
@@ -581,6 +659,8 @@ async def main():
             await client.start()
             me = await client.get_me()
             print("✅ Telegram user client online:", getattr(me, "username", None) or me.id)
+            await verify_publish_targets()
+            await startup_scan()
             print("📡 Monitoring every joined broadcast channel automatically.")
             print("🌐 Web trend scanner enabled.")
             await client.run_until_disconnected()

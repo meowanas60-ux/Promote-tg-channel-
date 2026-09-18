@@ -178,7 +178,7 @@ async def publish_to_channels(media_path, prompt, tutorial, cid):
                 buttons=Button.url("🎯 Get Prompt & Tutorial", link),
             )
         except Exception as e:
-            print("Publish error:", ch, e)
+            print("Publish error:", ch, repr(e), flush=True)
 
 async def save_and_publish(media_bytes, filename, source_type, source_chat, source_message_id,
                            prompt, tutorial, source_url=""):
@@ -268,6 +268,31 @@ async def telegram_handler(event):
         msg = event.message
         if not msg:
             return
+
+        # Main/session-account health command. This works in Saved Messages
+        # and in normal private chats; it is intentionally handled before
+        # the broadcast-channel filter below.
+        if (msg.message or '').strip().lower() == '/alive':
+            me = await client.get_me()
+            try:
+                storage = await client.get_entity(STORAGE_CHANNEL_ID)
+                storage_name = getattr(storage, 'title', None) or getattr(storage, 'username', None) or str(STORAGE_CHANNEL_ID)
+                storage_ok = True
+            except Exception as e:
+                storage_name = str(STORAGE_CHANNEL_ID)
+                storage_ok = False
+                print('Storage check error:', repr(e), flush=True)
+            await event.reply(
+                '🟢 <b>Visual Prompt AI Session is Online!</b>\n\n'
+                f'👤 Session: {getattr(me, "username", None) or me.id}\n'
+                f'📡 Channel monitor: Online\n'
+                f'💾 Storage: {"OK" if storage_ok else "ERROR"}\n'
+                f'📦 Storage channel: {storage_name}\n'
+                f'📢 Publish targets: {len(PUBLISHED_CHANNELS)}',
+                parse_mode='html'
+            )
+            return
+
         entity = await event.get_chat()
         if not isinstance(entity, Channel):
             return
@@ -316,7 +341,7 @@ async def telegram_handler(event):
             if media_msg:
                 await process_telegram_media(entity, media_msg, msg.message, tutorial)
     except Exception as e:
-        print("Telegram handler error:", repr(e))
+        print("Telegram handler error:", repr(e), flush=True)
 
 def allowed_domain(url):
     try:
@@ -630,9 +655,27 @@ async def main():
         try:
             await client.start()
             me = await client.get_me()
-            print("✅ Telegram user client online:", getattr(me, "username", None) or me.id)
-            print("📡 Monitoring every joined broadcast channel automatically.")
-            print("🌐 Web trend scanner enabled.")
+            print("✅ Telegram user client online:", getattr(me, "username", None) or me.id, flush=True)
+            try:
+                storage = await client.get_entity(STORAGE_CHANNEL_ID)
+                print("💾 Storage channel OK:", getattr(storage, "title", None) or getattr(storage, "username", None) or STORAGE_CHANNEL_ID, flush=True)
+            except Exception as e:
+                print("❌ Storage channel ERROR:", repr(e), flush=True)
+            for ch in PUBLISHED_CHANNELS:
+                try:
+                    ent = await client.get_entity(ch)
+                    print("📢 Publish target OK:", ch, "=>", getattr(ent, "title", None) or getattr(ent, "username", None), flush=True)
+                except Exception as e:
+                    print("❌ Publish target ERROR:", ch, repr(e), flush=True)
+            dialogs = 0
+            broadcasts = 0
+            async for d in client.iter_dialogs():
+                dialogs += 1
+                ent = d.entity
+                if isinstance(ent, Channel) and not getattr(ent, "megagroup", False):
+                    broadcasts += 1
+            print(f"📡 Monitoring joined broadcast channels automatically. dialogs={dialogs}, broadcasts={broadcasts}", flush=True)
+            print("🌐 Web trend scanner enabled.", flush=True)
             await client.run_until_disconnected()
         except Exception as e:
             print("❌ Telegram client error:", repr(e))

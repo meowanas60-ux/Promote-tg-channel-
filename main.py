@@ -95,6 +95,8 @@ def init_db():
     cols = {r[1] for r in con.execute("PRAGMA table_info(content)").fetchall()}
     if "source_url" not in cols:
         con.execute("ALTER TABLE content ADD COLUMN source_url TEXT")
+    if "media_type" not in cols:
+        con.execute("ALTER TABLE content ADD COLUMN media_type TEXT DEFAULT 'image'")
     con.commit()
     con.close()
 
@@ -112,21 +114,16 @@ def save_row(data):
     con.execute("""
         INSERT OR IGNORE INTO content
         (content_id, source_type, source_chat, source_message_id, storage_msg_id,
-         prompt, tutorial, caption, source_url, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         prompt, tutorial, caption, source_url, created_at, media_type)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, data)
     con.commit()
     con.close()
 
 def parse_prompt_tutorial(text):
-    """
-    Category-agnostic parser.
-    The previous version required an AI keyword, which caused posts from
-    other categories to be silently discarded.
-    """
     text = BeautifulSoup(text or "", "html.parser").get_text("\n")
     text = re.sub(r"\r", "", text).strip()
-    if not text:
+    if not text or not AI_WORDS.search(text):
         return None, None
 
     pm = PROMPT_HEADINGS.search(text)
@@ -149,7 +146,7 @@ def parse_prompt_tutorial(text):
             tutorial = text[tm.end():].strip()
             prompt = text[:tm.start()].strip()
 
-    if len(prompt) < 5:
+    if len(prompt) < 20:
         return None, None
     if len(prompt) > 12000:
         prompt = prompt[:12000].rstrip()
@@ -164,36 +161,44 @@ def channel_is_publish_target(entity):
     username = (getattr(entity, "username", "") or "").lower()
     return any(username == x.replace("@", "").lower() for x in PUBLISHED_CHANNELS)
 
+def build_post_caption(prompt, tutorial):
+    kind = "🎬 AI VIDEO PROMPT" if re.search(r"(video|kling|runway|veo|sora)", prompt or "", re.I) else "🖼️ AI IMAGE PROMPT"
+    has_guide = bool((tutorial or "").strip())
+    guide_line = "📚 Full tutorial included" if has_guide else "🧠 Full prompt included"
+    return (
+        "✨ <b>VISUAL PROMPT AI</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"<b>{kind}</b>\n"
+        f"{guide_line}\n"
+        "🎯 Tap the button below to open the full guide.\n"
+        "━━━━━━━━━━━━━━━━━━"
+    )
+
 async def publish_to_channels(media_path, prompt, tutorial, cid):
+    landing_url = f"{PUBLIC_BASE_URL}/content/{cid}"
     if not PUBLIC_BASE_URL:
-        print("⚠️ PUBLIC_BASE_URL is empty; landing-page button will be invalid.")
+        print("❌ PUBLIC_BASE_URL is empty; cannot create landing URL.")
+        return
 
-    link = f"{PUBLIC_BASE_URL}/content/{cid}" if PUBLIC_BASE_URL else f"/content/{cid}"
-    caption = "✨ <b>AI Prompt & Tutorial</b>\n\nTap below to get the full prompt + guide."
     from telethon import Button
+    caption = build_post_caption(prompt, tutorial)
+    buttons = [[Button.url("🎯 GET PROMPT + TUTORIAL", landing_url)]]
 
-    success = 0
     for ch in PUBLISHED_CHANNELS:
         try:
-            entity = await client.get_entity(ch)
-            title = getattr(entity, "title", None) or getattr(entity, "username", None) or str(entity.id)
-            print(f"📤 Publishing to {ch} -> {title}")
-            await client.send_file(
-                entity,
+            print(f"📤 Publishing to {ch} -> professional post + button")
+            msg = await client.send_file(
+                ch,
                 media_path,
                 caption=caption,
                 parse_mode="html",
-                buttons=Button.url("🎯 Get Prompt & Tutorial", link),
+                buttons=buttons,
+                force_document=False,
             )
-            success += 1
-            print(f"✅ Published to {ch} (cid={cid})")
+            mid = getattr(msg, "id", None)
+            print(f"✅ Published to {ch} (message_id={mid}, button_url={landing_url})")
         except Exception as e:
-            print(f"❌ Publish error: {ch}: {type(e).__name__}: {e}")
-
-    if success == 0:
-        print("❌ Publish failed for ALL configured PUBLISHED_CHANNELS.")
-    return success > 0
-
+            print(f"❌ Publish error {ch}: {repr(e)}")
 
 async def save_and_publish(media_bytes, filename, source_type, source_chat, source_message_id,
                            prompt, tutorial, source_url=""):
@@ -219,15 +224,14 @@ async def save_and_publish(media_bytes, filename, source_type, source_chat, sour
             parse_mode="html"
         )
         storage_msg_id = msg.id if hasattr(msg, "id") else msg[0].id
+        media_type = "video" if str(filename).lower().endswith((".mp4", ".webm", ".mov", ".mkv")) else "image"
         save_row((
             cid, source_type, str(source_chat), str(source_message_id), storage_msg_id,
             prompt, tutorial, "", source_url,
-            datetime.now(timezone.utc).isoformat()
+            datetime.now(timezone.utc).isoformat(), media_type
         ))
-        published = await publish_to_channels(str(temp), prompt, tutorial, cid)
-        if not published:
-            print(f"⚠️ Stored {cid}, but no destination channel accepted the publication.")
-        return published
+        await publish_to_channels(str(temp), prompt, tutorial, cid)
+        return True
     finally:
         try:
             temp.unlink()
@@ -500,152 +504,233 @@ async def health(request):
         "web_scan_interval_seconds": TREND_SCAN_INTERVAL
     })
 
+def _truncate(text, n=260):
+    clean = re.sub(r"\s+", " ", (text or "").strip())
+    if len(clean) <= n:
+        return clean
+    return clean[:n].rstrip(" .,-") + "…"
+
+def _page_title(row):
+    media_type = (row["media_type"] if "media_type" in row.keys() else "image") or "image"
+    label = "Video" if media_type == "video" else "Image"
+    return f"AI {label} Prompt & Tutorial"
+
+def _bot_deep_link(cid):
+    return f"https://t.me/{BOT_USERNAME}?start=content_{cid}"
+
 async def home(request):
-    return web.Response(text="""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Visual Prompt AI</title><style>body{font-family:Arial;background:#111827;color:#fff;text-align:center;padding:50px}a{display:inline-block;margin:10px;padding:14px 22px;background:#fff;color:#111827;border-radius:10px;text-decoration:none;font-weight:700}</style></head><body><h1>🎨 Visual Prompt AI</h1><p>AI photo/video prompt delivery service is online.</p><a href="/health">Health Check</a><a href="https://t.me/VisualPromptAIBot">Open Bot</a></body></html>""", content_type="text/html")
+    return web.Response(
+        text="""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Visual Prompt AI</title>
+<meta name="theme-color" content="#111827">
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(circle at top,#312e81 0,#0f172a 42%,#020617 100%);
+font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#f8fafc}
+.wrap{max-width:760px;margin:0 auto;padding:28px 16px 50px}
+.hero{padding:30px 20px;text-align:center}
+.logo{width:64px;height:64px;border-radius:18px;display:grid;place-items:center;margin:0 auto 14px;
+background:linear-gradient(135deg,#8b5cf6,#ec4899);font-size:30px;box-shadow:0 14px 40px rgba(0,0,0,.25)}
+h1{margin:0 0 10px;font-size:34px;letter-spacing:-.7px}
+p{color:#cbd5e1;line-height:1.65}
+.btn{display:inline-block;margin-top:12px;padding:13px 18px;border-radius:12px;text-decoration:none;font-weight:800;
+background:#fff;color:#111827}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <div class="logo">✦</div>
+    <h1>Visual Prompt AI</h1>
+    <p>AI image & video prompts, creative workflows and tutorials in one place.</p>
+    <a class="btn" href="https://t.me/VisualPromptAIBot">Open Telegram Bot</a>
+  </div>
+</div>
+</body>
+</html>""",
+        content_type="text/html"
+    )
+
+async def media_preview(request):
+    cid = request.match_info["content_id"]
+    row = get_content_row(cid)
+    if not row:
+        return web.Response(status=404, text="Content not found")
+
+    try:
+        msg = await client.get_messages(STORAGE_CHANNEL_ID, ids=int(row["storage_msg_id"]))
+        if not msg:
+            return web.Response(status=404, text="Media not found")
+
+        bio = BytesIO()
+        await client.download_media(msg, file=bio)
+        data = bio.getvalue()
+        if not data:
+            return web.Response(status=404, text="Media not available")
+
+        media_type = (row["media_type"] if "media_type" in row.keys() else "image") or "image"
+        ctype = "video/mp4" if media_type == "video" else "image/jpeg"
+        return web.Response(
+            body=data,
+            content_type=ctype,
+            headers={"Cache-Control": "public, max-age=3600"}
+        )
+    except Exception as e:
+        print("Media preview error:", repr(e))
+        return web.Response(status=500, text="Media preview unavailable")
+
+def get_content_row(cid):
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    row = con.execute("SELECT * FROM content WHERE content_id=?", (cid,)).fetchone()
+    con.close()
+    return row
 
 async def landing(request):
     cid = request.match_info["content_id"]
-    link = f"{PUBLIC_BASE_URL}/content/{cid}"
-    smartlink = "https://www.profitableratecpmnetwork.com/herywwsc?key=a8803ae52732f8b9dc5b4aaf1ba40e0a"
+    row = get_content_row(cid)
+    if not row:
+        return web.Response(status=404, text="Content not found")
+
+    bot_link = _bot_deep_link(cid)
+    smartlink = os.getenv(
+        "ADSTERRA_SMARTLINK",
+        "https://www.profitableratecpmnetwork.com/herywwsc?key=a8803ae52732f8b9dc5b4aaf1ba40e0a"
+    )
+    media_type = (row["media_type"] if "media_type" in row.keys() else "image") or "image"
+    title = _page_title(row)
+    prompt_preview = _truncate(row["prompt"], 520)
+    tutorial = (row["tutorial"] or "").strip()
+    tutorial_preview = _truncate(tutorial, 700) if tutorial else "No separate tutorial was provided by the source."
+
+    if media_type == "video":
+        media_html = f'<video class="preview" controls playsinline preload="metadata" src="/media/{html.escape(cid)}"></video>'
+    else:
+        media_html = f'<img class="preview" src="/media/{html.escape(cid)}" alt="AI prompt reference image" loading="eager">'
 
     body = f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AI Prompt & Tutorial</title>
+<title>{html.escape(title)}</title>
+<meta name="description" content="Visual Prompt AI — full AI prompt and tutorial.">
+<meta name="theme-color" content="#111827">
 <style>
-body{{margin:0;background:#f5f7fb;color:#172033;font-family:Arial,sans-serif}}
-.wrap{{max-width:760px;margin:auto;padding:18px}}
-.card{{background:#fff;border-radius:18px;padding:20px;margin:14px 0;box-shadow:0 4px 20px rgba(0,0,0,.07)}}
-h1{{margin-top:0;font-size:26px}}
-.btn{{display:inline-block;padding:14px 22px;border-radius:12px;background:#111827;color:#fff;text-decoration:none;font-weight:700}}
-.ad{{display:flex;justify-content:center;align-items:center;min-height:90px;overflow:hidden;margin:10px 0}}
-.small{{color:#667085;font-size:13px}}
+*{{box-sizing:border-box}}
+body{{margin:0;background:linear-gradient(180deg,#eef2ff 0,#f8fafc 45%,#eef2ff 100%);
+color:#0f172a;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}}
+.wrap{{max-width:780px;margin:0 auto;padding:16px}}
+.top{{display:flex;align-items:center;gap:12px;padding:10px 4px 18px}}
+.avatar{{width:46px;height:46px;border-radius:14px;display:grid;place-items:center;background:linear-gradient(135deg,#7c3aed,#ec4899);color:#fff;font-size:22px;font-weight:900}}
+.brand{{font-weight:900;font-size:17px}}
+.muted{{color:#64748b;font-size:13px}}
+.card{{background:rgba(255,255,255,.96);border:1px solid #e2e8f0;border-radius:22px;padding:18px;margin:12px 0;box-shadow:0 12px 40px rgba(15,23,42,.07)}}
+.preview{{width:100%;max-height:560px;object-fit:cover;border-radius:16px;background:#e2e8f0;display:block}}
+.badges{{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 8px}}
+.badge{{background:#f1f5f9;border:1px solid #e2e8f0;color:#334155;padding:7px 10px;border-radius:999px;font-size:12px;font-weight:800}}
+h1{{font-size:29px;line-height:1.15;margin:8px 0 10px;letter-spacing:-.7px}}
+h2{{font-size:17px;margin:0 0 10px}}
+.copy{{white-space:pre-wrap;line-height:1.65;color:#334155;font-size:14px}}
+.excerpt{{padding:14px;border-radius:14px;background:#f8fafc;border:1px solid #e2e8f0}}
+.ad{{min-height:120px;display:grid;place-items:center;text-align:center;background:#fff}}
+.ad-label{{font-size:11px;letter-spacing:.12em;color:#94a3b8;font-weight:900}}
+.btn{{display:block;width:100%;padding:15px 16px;border-radius:14px;text-decoration:none;text-align:center;font-weight:900;margin-top:10px}}
+.primary{{background:linear-gradient(135deg,#7c3aed,#ec4899);color:#fff;box-shadow:0 12px 28px rgba(124,58,237,.25)}}
+.secondary{{background:#0f172a;color:#fff}}
+.note{{font-size:12px;color:#64748b;line-height:1.6;text-align:center;margin:10px 0 0}}
+.hidden{{display:none}}
+.footer{{text-align:center;color:#94a3b8;font-size:12px;padding:12px 0 20px}}
 </style>
-
-<!-- Social Bar -->
-<script src="https://pl31392177.profitableratecpmnetwork.com/e8/1f/77/e81f77dcaabfb52998ffb6fe2e50a4b8.js"></script>
 </head>
 <body>
 <div class="wrap">
+  <div class="top">
+    <div class="avatar">✦</div>
+    <div>
+      <div class="brand">Visual Prompt AI</div>
+      <div class="muted">AI prompts • tutorials • creative workflows</div>
+    </div>
+  </div>
 
-<div class="card">
-<h1>🎨 AI Prompt & Tutorial</h1>
-<p>Get the AI photo/video and its prompt from Telegram.</p>
+  <div class="card">
+    {media_html}
+    <div class="badges">
+      <span class="badge">✨ AI Prompt</span>
+      <span class="badge">📚 Tutorial</span>
+      <span class="badge">⚡ Telegram Delivery</span>
+    </div>
+    <h1>{html.escape(title)}</h1>
+    <div class="excerpt"><div class="copy">{html.escape(prompt_preview)}</div></div>
+  </div>
+
+  <div class="card">
+    <h2>🧠 Prompt Preview</h2>
+    <div class="copy">{html.escape(prompt_preview)}</div>
+  </div>
+
+  <div class="card">
+    <h2>📚 Tutorial / Guide</h2>
+    <div class="copy">{html.escape(tutorial_preview)}</div>
+  </div>
+
+  <div class="card ad">
+    <div>
+      <div class="ad-label">SPONSORED</div>
+      <p class="muted">Support the project with the ad below.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🚀 Continue</h2>
+    <p class="muted">Step 1: open the sponsored link. Step 2: return here. Step 3: open Telegram to receive the full content.</p>
+    <a id="adBtn" class="btn primary" href="{html.escape(smartlink)}" target="_blank" rel="noopener noreferrer">🔓 CONTINUE</a>
+    <a id="botBtn" class="btn secondary hidden" href="{html.escape(bot_link)}">📲 OPEN TELEGRAM & GET FULL CONTENT</a>
+    <div id="timer" class="note">The Telegram button will appear after you continue.</div>
+  </div>
+
+  <div class="footer">© Visual Prompt AI • Built for prompt creators</div>
 </div>
-
-<!-- Native Ad -->
-<div class="card ad">
-<script async="async" data-cfasync="false" src="https://pl31392178.profitableratecpmnetwork.com/c5399e7ba5336815e27f57a310183960/invoke.js"></script>
-<div id="container-c5399e7ba5336815e27f57a310183960"></div>
-</div>
-
-<!-- 300x250 Banner -->
-<div class="card ad">
 <script>
-  atOptions = {{
-    'key' : '27f7adc1905b29d75422693fb24c5c27',
-    'format' : 'iframe',
-    'height' : 250,
-    'width' : 300,
-    'params' : {{}}
-  }};
+(function(){{
+  const adBtn=document.getElementById('adBtn');
+  const botBtn=document.getElementById('botBtn');
+  const timer=document.getElementById('timer');
+  function reveal(){{
+    botBtn.classList.remove('hidden');
+    timer.textContent='Ready — tap the Telegram button to continue.';
+  }}
+  adBtn.addEventListener('click',function(){{
+    let s=3;
+    timer.textContent='Please wait ' + s + ' seconds…';
+    const iv=setInterval(function(){{
+      s--;
+      timer.textContent=s>0 ? 'Please wait ' + s + ' seconds…' : 'Ready — tap the Telegram button to continue.';
+      if(s<=0){{clearInterval(iv);reveal();}}
+    }},1000);
+  }});
+}})();
 </script>
-<script src="https://www.highrevenueformat.com/27f7adc1905b29d75422693fb24c5c27/invoke.js"></script>
-</div>
-
-<div class="card" style="text-align:center">
-<p><b>Step 1:</b> Join the required Telegram channel(s).</p>
-<p><b>Step 2:</b> Open the bot and receive the media + prompt.</p>
-<a class="btn" href="{html.escape(link)}">🎯 Get Prompt & Tutorial</a>
-</div>
-
-<!-- Smart Link -->
-<div class="card" style="text-align:center">
-<a class="btn" href="{smartlink}" target="_blank" rel="noopener">🔗 Continue</a>
-<p class="small">The smart link may open a third-party advertising page.</p>
-</div>
-
-<!-- Popunder -->
-<script src="https://pl31392175.profitableratecpmnetwork.com/24/9e/8f/249e8ffb48623ecc2f8419c35b6bef1b.js"></script>
-
-<div class="card small">
-<p>© AI Prompt & Tutorial</p>
-</div>
-</div>
 </body>
 </html>"""
     return web.Response(text=body, content_type="text/html")
-
 
 async def start_web():
     app = web.Application()
     app.router.add_get("/", home)
     app.router.add_get("/health", health)
     app.router.add_get("/content/{content_id}", landing)
+    app.router.add_get("/media/{content_id}", media_preview)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"🌍 Web server listening on {PORT}")
+    print(f"🌍 Web server listening on {PORT} | landing + media preview enabled")
     return runner
-
-async def verify_publish_targets():
-    print("🔎 Checking configured publish channels...")
-    for ch in PUBLISHED_CHANNELS:
-        try:
-            entity = await client.get_entity(ch)
-            title = getattr(entity, "title", None) or getattr(entity, "username", None) or str(entity.id)
-            print(f"✅ Publish target reachable: {ch} -> {title}")
-        except Exception as e:
-            print(f"❌ Publish target NOT reachable: {ch}: {type(e).__name__}: {e}")
-
-
-async def startup_scan():
-    limit = int(os.getenv("STARTUP_SCAN_LIMIT", "0"))
-    if limit <= 0:
-        return
-
-    print(f"🔁 Startup scan enabled: last {limit} messages per joined broadcast channel")
-    async for dialog in client.iter_dialogs():
-        entity = dialog.entity
-        if not isinstance(entity, Channel):
-            continue
-        if getattr(entity, "megagroup", False):
-            continue
-        if utils.get_peer_id(entity) == STORAGE_CHANNEL_ID:
-            continue
-        if channel_is_publish_target(entity):
-            continue
-
-        try:
-            async for msg in client.iter_messages(entity, limit=limit):
-                kind = media_from_telegram(msg)
-                text = msg.message or ""
-                if not kind and not text.strip():
-                    continue
-
-                if kind:
-                    prompt, tutorial = parse_prompt_tutorial(text)
-                    if prompt:
-                        await process_telegram_media(entity, msg, text, tutorial)
-                else:
-                    prompt, tutorial = parse_prompt_tutorial(text)
-                    if not prompt:
-                        continue
-                    media_msg = None
-                    if getattr(msg, "reply_to_msg_id", None):
-                        try:
-                            candidate = await client.get_messages(entity, ids=msg.reply_to_msg_id)
-                            if candidate and media_from_telegram(candidate):
-                                media_msg = candidate
-                        except Exception:
-                            pass
-                    if media_msg:
-                        await process_telegram_media(entity, media_msg, msg.message, tutorial)
-        except Exception as e:
-            print(f"⚠️ Startup scan error in {getattr(entity, 'username', entity.id)}: {e}")
 
 async def main():
     init_db()
@@ -659,8 +744,6 @@ async def main():
             await client.start()
             me = await client.get_me()
             print("✅ Telegram user client online:", getattr(me, "username", None) or me.id)
-            await verify_publish_targets()
-            await startup_scan()
             print("📡 Monitoring every joined broadcast channel automatically.")
             print("🌐 Web trend scanner enabled.")
             await client.run_until_disconnected()

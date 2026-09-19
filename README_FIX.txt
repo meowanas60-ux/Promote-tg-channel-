@@ -1,11 +1,6 @@
-Visual Prompt AI - fixed package
+# VisualPrompt AI
+Photo/video prompt publisher based on the supplied Telegram single-service structure.
 
-Main fixes:
-1. Automatic Telegram monitoring/publishing is preserved.
-2. Published posts now use the button label: ✨ Get Prompt
-3. The landing page wording is prompt/tutorial focused instead of APK focused.
-4. Subscription verification button carries the content ID, so after joining channels
-   the bot can immediately deliver the requested media + prompt/tutorial.
-5. Python syntax was checked with py_compile.
+Flow: source photo/video -> queue -> storage channel -> 3 published channels -> landing page -> Telegram bot -> original media.
 
-Deploy the same way as the existing project and keep your existing environment variables.
+Required secrets: API_HASH, SESSION_STRING, BOT_TOKEN. Do not commit real secrets to a public repository.

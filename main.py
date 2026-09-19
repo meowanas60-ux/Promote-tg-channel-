@@ -1,700 +1,176 @@
-import asyncio
-import hashlib
-import html
 import os
 import re
-import sqlite3
-import urllib.parse
-import urllib.robotparser
-import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
-from pathlib import Path
-
-import aiohttp
+import asyncio
+import logging
+from html import escape as html_escape
+from urllib.parse import quote
 from aiohttp import web
-from bs4 import BeautifulSoup
-from dotenv import load_dotenv
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.tl.types import Channel
-from telethon import utils
-from io import BytesIO
+from telethon.errors import FloodWaitError
 
-load_dotenv()
+API_ID=int(os.environ.get("API_ID","35317271"))
+API_HASH=os.environ.get("API_HASH","")
+SESSION_STRING=os.environ.get("SESSION_STRING")
+if not SESSION_STRING: raise RuntimeError("SESSION_STRING environment variable is missing")
 
-API_ID = int(os.getenv("API_ID", "35317271"))
-API_HASH = os.getenv("API_HASH", "")
-SESSION_STRING = os.getenv("SESSION_STRING", "")
-STORAGE_CHANNEL_ID = int(os.getenv("STORAGE_CHANNEL_ID", "-1003976996787"))
-PUBLISHED_CHANNELS = [x.strip() for x in os.getenv(
-    "PUBLISHED_CHANNELS",
-    "@TheFramePromptOfficial,@NextGen_AI_Creates,@NextGenAICreates"
-).split(",") if x.strip()]
-BOT_USERNAME = os.getenv("BOT_USERNAME", "VisualPromptAIBot").replace("@", "")
-PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
-PORT = int(os.getenv("PORT", "10000"))
-DB_PATH = os.getenv("DB_PATH", "prompts.db")
+DOWNLOAD_BOT_USERNAME=os.environ.get("DOWNLOAD_BOT_USERNAME","VisualPromptAIBot").strip().lstrip("@")
+PUBLIC_BASE_URL=os.environ.get("PUBLIC_BASE_URL","https://your-service.onrender.com").rstrip("/")
+STORAGE_CHANNEL_ID=int(os.environ.get("STORAGE_CHANNEL_ID","-1003976996787"))
+OWNER_ID=int(os.environ.get("OWNER_ID","8899691272"))
+DEST_CHANNELS=[x.strip().lstrip("@") for x in os.environ.get("DEST_CHANNELS","TheFramePromptOfficial,NextGen_AI_Creates,NextGenAICreates").split(",") if x.strip()]
+SOURCE_CHANNELS=[x.strip().lstrip("@") for x in os.environ.get("SOURCE_CHANNELS","").split(",") if x.strip()]
+IGNORE_CHANNELS={x.lower() for x in DEST_CHANNELS}|{str(STORAGE_CHANNEL_ID)}
+ADSTERRA_SMARTLINK=os.environ.get("ADSTERRA_SMARTLINK","").strip()
+POST_INTERVAL_SECONDS=int(os.environ.get("POST_INTERVAL_SECONDS","1800"))
+CHANNEL_DELAY_SECONDS=int(os.environ.get("CHANNEL_DELAY_SECONDS","5"))
 
-# Worldwide web discovery:
-# Put public RSS/Atom feeds here, comma-separated. The built-in discovery feed
-# uses Google News RSS as a broad worldwide discovery layer. Actual publishing
-# still requires a page to contain both prompt + tutorial/guide and reusable media.
-DEFAULT_RSS = (
-    "https://news.google.com/rss/search?q="
-    + urllib.parse.quote(
-        '("AI image prompt" OR "AI video prompt" OR "Midjourney prompt" '
-        'OR "Flux prompt" OR "Veo prompt" OR "AI art prompt" OR "AI video tutorial")'
-    )
-    + "&hl=en-US&gl=US&ceid=US:en"
-)
-TREND_RSS_URLS = [x.strip() for x in os.getenv("TREND_RSS_URLS", DEFAULT_RSS).split(",") if x.strip()]
-TREND_SCAN_INTERVAL = int(os.getenv("TREND_SCAN_INTERVAL", "86400"))
-MAX_WEB_ITEMS_PER_SCAN = int(os.getenv("MAX_WEB_ITEMS_PER_SCAN", "12"))
-WEB_ALLOWED_DOMAINS = {
-    x.strip().lower().lstrip(".")
-    for x in os.getenv("WEB_ALLOWED_DOMAINS", "").split(",") if x.strip()
-}
-WEB_MEDIA_REUSE = os.getenv("WEB_MEDIA_REUSE", "0") == "1"
-USER_AGENT = os.getenv("USER_AGENT", "VisualPromptAI/1.0 (+https://t.me/VisualPromptAIBot)")
+logging.basicConfig(level=logging.INFO,format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+log=logging.getLogger("visual_prompt_monitor")
+client=TelegramClient(StringSession(SESSION_STRING),API_ID,API_HASH)
 
-if not API_HASH or not SESSION_STRING:
-    raise RuntimeError("API_HASH and SESSION_STRING are required")
+QUEUE=[]; SEEN=set(); PUBLISHED=set(); ME_ID=None
+STATS={"sent":0,"queued":0,"duplicates":0,"storage_saved":0,"storage_failed":0,"send_failed":0,"photos":0,"videos":0}
 
-client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+BLOCKED_TERMS=("1xbet","aviator","casino","gambling","betting","melbet","baji","jeet","cricket365","deposit money","daily profit","hack and earn","investment guaranteed")
 
-AI_WORDS = re.compile(
-    r"\b(ai|artificial intelligence|midjourney|stable diffusion|flux|dall[- ]?e|"
-    r"imagen|firefly|ideogram|leonardo|kling|runway|veo|sora|hailuo|wan|"
-    r"seedance|comfyui|gen[- ]?ai|generative|prompt)\b",
-    re.I
-)
+def clean_prompt(text):
+    if not text: return ""
+    text=re.sub(r"https?://\S+","",text)
+    text=re.sub(r"t\.me/\S+","",text)
+    text=re.sub(r"@\w+","",text)
+    text=re.sub(r"\[([^\]]+)\]\([^)]+\)",r"\1",text)
+    text=re.sub(r"\n{3,}","\n\n",text)
+    return text.strip()
 
-PROMPT_HEADINGS = re.compile(r"(?:^|\n)\s*(?:prompt|image prompt|video prompt|full prompt)\s*[:\-]\s*", re.I)
-TUTORIAL_HEADINGS = re.compile(
-    r"(?:^|\n)\s*(?:tutorial|guide|how to|steps|workflow|instructions)\s*[:\-]\s*",
-    re.I
-)
+def blocked(text): return any(x in (text or "").lower() for x in BLOCKED_TERMS)
 
-def init_db():
-    con = sqlite3.connect(DB_PATH)
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS content (
-            content_id TEXT PRIMARY KEY,
-            source_type TEXT NOT NULL,
-            source_chat TEXT NOT NULL,
-            source_message_id TEXT NOT NULL,
-            storage_msg_id INTEGER NOT NULL,
-            prompt TEXT NOT NULL,
-            tutorial TEXT NOT NULL,
-            caption TEXT,
-            source_url TEXT,
-            created_at TEXT NOT NULL,
-            UNIQUE(source_chat, source_message_id)
-        )
-    """)
-    cols = {r[1] for r in con.execute("PRAGMA table_info(content)").fetchall()}
-    if "source_url" not in cols:
-        con.execute("ALTER TABLE content ADD COLUMN source_url TEXT")
-    con.commit()
-    con.close()
-
-def already_seen(source_chat, source_message_id):
-    con = sqlite3.connect(DB_PATH)
-    row = con.execute(
-        "SELECT 1 FROM content WHERE source_chat=? AND source_message_id=?",
-        (str(source_chat), str(source_message_id))
-    ).fetchone()
-    con.close()
-    return row is not None
-
-def save_row(data):
-    con = sqlite3.connect(DB_PATH)
-    con.execute("""
-        INSERT OR IGNORE INTO content
-        (content_id, source_type, source_chat, source_message_id, storage_msg_id,
-         prompt, tutorial, caption, source_url, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, data)
-    con.commit()
-    con.close()
-
-def parse_prompt_tutorial(text, allow_plain=False):
-    text = BeautifulSoup(text or "", "html.parser").get_text("\n")
-    text = re.sub(r"\r", "", text).strip()
-    if not text:
-        return None, None
-
-    pm = PROMPT_HEADINGS.search(text)
-    tm = TUTORIAL_HEADINGS.search(text)
-    # For media posts coming from the user's joined prompt channels, a plain
-    # caption is allowed: many prompt channels paste the actual prompt without
-    # writing "Prompt:" or an AI product name. For non-media text, keep the
-    # AI-keyword guard to reduce unrelated matches.
-    if not pm and not allow_plain and not AI_WORDS.search(text):
-        return None, None
-
-    # If a source uses a clear Prompt: heading, keep the exact section.
-    if pm:
-        if tm and tm.start() > pm.end():
-            prompt = text[pm.end():tm.start()].strip()
-            tutorial = text[tm.end():].strip()
-        else:
-            prompt = text[pm.end():].strip()
-            tutorial = ""
-    else:
-        # Many Telegram prompt channels simply paste the prompt without a
-        # "Prompt:" heading. For a media post, AI-looking text is sufficient.
-        prompt = text
-        tutorial = ""
-        if tm:
-            tutorial = text[tm.end():].strip()
-            prompt = text[:tm.start()].strip()
-
-    if len(prompt) < 20:
-        return None, None
-    if len(prompt) > 12000:
-        prompt = prompt[:12000].rstrip()
-    if len(tutorial) > 12000:
-        tutorial = tutorial[:12000].rstrip()
-    return prompt, tutorial
-
-def content_id(source_type, source_key):
-    return hashlib.sha256(f"{source_type}:{source_key}".encode()).hexdigest()[:16]
-
-def channel_is_publish_target(entity):
-    username = (getattr(entity, "username", "") or "").lower()
-    return any(username == x.replace("@", "").lower() for x in PUBLISHED_CHANNELS)
-
-async def publish_to_channels(media_path, prompt, tutorial, cid):
-    link = f"{PUBLIC_BASE_URL}/content/{cid}"
-    caption = "✨ <b>AI Prompt & Tutorial</b>\n\nTap below to get the full prompt + guide."
-    from telethon import Button
-    for ch in PUBLISHED_CHANNELS:
-        try:
-            await client.send_file(
-                ch,
-                media_path,
-                caption=caption,
-                parse_mode="html",
-                buttons=[[Button.url("⬇️ Download APK", link)]],
-            )
-        except Exception as e:
-            print("Publish error:", ch, repr(e), flush=True)
-
-async def save_and_publish(media_bytes, filename, source_type, source_chat, source_message_id,
-                           prompt, tutorial, source_url=""):
-    if already_seen(source_chat, source_message_id):
-        return False
-
-    cid = content_id(source_type, f"{source_chat}:{source_message_id}")
-    temp = Path("/tmp") / f"{cid}_{filename}"
-    temp.write_bytes(media_bytes)
-
-    storage_caption = (
-        "AI Prompt Content\n"
-        f"CONTENT_ID: {cid}\n"
-        f"SOURCE_TYPE: {source_type}\n\n"
-        f"PROMPT:\n{prompt}\n\n"
-        f"TUTORIAL:\n{tutorial}"
-    )
-    try:
-        msg = await client.send_file(
-            STORAGE_CHANNEL_ID,
-            str(temp),
-            caption=storage_caption,
-            parse_mode="html"
-        )
-        storage_msg_id = msg.id if hasattr(msg, "id") else msg[0].id
-        save_row((
-            cid, source_type, str(source_chat), str(source_message_id), storage_msg_id,
-            prompt, tutorial, "", source_url,
-            datetime.now(timezone.utc).isoformat()
-        ))
-        await publish_to_channels(str(temp), prompt, tutorial, cid)
-        return True
-    finally:
-        try:
-            temp.unlink()
-        except FileNotFoundError:
-            pass
-
-def media_from_telegram(msg):
-    if getattr(msg, "photo", None):
-        return "photo"
-    if getattr(msg, "video", None):
-        return "video"
-    if getattr(msg, "document", None):
-        mime = (getattr(msg.document, "mime_type", "") or "").lower()
-        if mime.startswith("video/"):
-            return "video"
+def media_kind(message):
+    if getattr(message,"photo",None): return "Photo"
+    if getattr(message,"video",None): return "Video"
+    doc=getattr(message,"document",None)
+    mime=getattr(doc,"mime_type",None) if doc else None
+    if mime and mime.lower().startswith("video/"): return "Video"
     return None
 
-async def download_telegram_media(msg):
-    # BytesIO is reliable across Telethon versions and avoids passing the
-    # built-in bytes type as a pseudo file object.
-    bio = BytesIO()
-    await client.download_media(msg, file=bio)
-    return bio.getvalue()
+def key(event): return f"{event.chat_id}:{event.id}"
 
-async def process_telegram_media(entity, media_msg, prompt_text, tutorial_text="", allow_plain_prompt=True):
-    kind = media_from_telegram(media_msg)
-    if not kind or not prompt_text:
-        return False
+async def allowed(event):
+    chat=await event.get_chat()
+    username=getattr(chat,"username",None)
+    if username:
+        u=username.lower()
+        if u in IGNORE_CHANNELS: return False
+        if SOURCE_CHANNELS: return u in {x.lower() for x in SOURCE_CHANNELS}
+        return True
+    if SOURCE_CHANNELS:
+        vals={str(x).lstrip("-") for x in SOURCE_CHANNELS}
+        return str(event.chat_id).lstrip("-") in vals
+    return str(event.chat_id)!=str(STORAGE_CHANNEL_ID)
 
-    prompt, tutorial = parse_prompt_tutorial(prompt_text, allow_plain=allow_plain_prompt)
-    if not prompt:
-        return False
-    if tutorial_text:
-        _, parsed_tutorial = parse_prompt_tutorial(tutorial_text)
-        if parsed_tutorial:
-            tutorial = parsed_tutorial
-        elif len(tutorial_text.strip()) >= 20:
-            tutorial = tutorial_text.strip()[:12000]
-
-    data = await download_telegram_media(media_msg)
-    if not data:
-        return False
-    ext = ".jpg" if kind == "photo" else ".mp4"
-    username = getattr(entity, "username", None)
-    source_chat = username or entity.id
-    source_url = f"https://t.me/{username}/{media_msg.id}" if username else ""
-    return await save_and_publish(
-        data, f"telegram_{media_msg.id}{ext}", "telegram", source_chat,
-        media_msg.id, prompt, tutorial, source_url
-    )
-
-@client.on(events.NewMessage)
-async def telegram_handler(event):
-    try:
-        msg = event.message
-        if not msg:
-            return
-
-        # Main/session-account health command. This works in Saved Messages
-        # and in normal private chats; it is intentionally handled before
-        # the broadcast-channel filter below.
-        if (msg.message or '').strip().lower() == '/alive':
-            me = await client.get_me()
-            try:
-                storage = await client.get_entity(STORAGE_CHANNEL_ID)
-                storage_name = getattr(storage, 'title', None) or getattr(storage, 'username', None) or str(STORAGE_CHANNEL_ID)
-                storage_ok = True
-            except Exception as e:
-                storage_name = str(STORAGE_CHANNEL_ID)
-                storage_ok = False
-                print('Storage check error:', repr(e), flush=True)
-            await event.reply(
-                '🟢 <b>Visual Prompt AI Session is Online!</b>\n\n'
-                f'👤 Session: {getattr(me, "username", None) or me.id}\n'
-                f'📡 Channel monitor: Online\n'
-                f'💾 Storage: {"OK" if storage_ok else "ERROR"}\n'
-                f'📦 Storage channel: {storage_name}\n'
-                f'📢 Publish targets: {len(PUBLISHED_CHANNELS)}',
-                parse_mode='html'
-            )
-            return
-
-        entity = await event.get_chat()
-        if not isinstance(entity, Channel):
-            return
-        if getattr(entity, "megagroup", False):
-            return
-
-        # Telethon channel entity IDs are positive; get_peer_id() gives the
-        # normal -100... form used by Telegram config.
-        if utils.get_peer_id(entity) == STORAGE_CHANNEL_ID:
-            return
-        if channel_is_publish_target(entity):
-            return
-
-        # Case 1: photo/video and prompt are in the same caption.
-        # IMPORTANT: on joined prompt channels we accept a plain caption as the
-        # prompt. The old code rejected captions such as:
-        # "Create a cinematic, full-body portrait..." because they did not
-        # contain the literal word AI/Prompt/Midjourney/etc.
-        kind = media_from_telegram(msg)
-        source_name = getattr(entity, "title", None) or getattr(entity, "username", None) or str(entity.id)
-        if kind:
-            text = (msg.message or "").strip()
-            print(f"📥 SOURCE: {source_name} | msg={msg.id} | media={kind} | caption_chars={len(text)}", flush=True)
-            if len(text) < 20:
-                print(f"⏭️ SKIP: {source_name} msg={msg.id} | prompt/caption too short", flush=True)
-                return
-            ok = await process_telegram_media(entity, msg, text, "", allow_plain_prompt=True)
-            print(f"{'✅ ACCEPTED' if ok else '❌ FAILED'}: {source_name} msg={msg.id}", flush=True)
-            return
-
-        # Case 2: source sends the photo/video first and the prompt as the
-        # next text message, or sends the prompt as a reply to the media.
-        if not kind and (msg.message or ""):
-            prompt, tutorial = parse_prompt_tutorial(msg.message, allow_plain=True)
-            if not prompt:
-                return
-            media_msg = None
-            if getattr(msg, "reply_to_msg_id", None):
-                try:
-                    candidate = await client.get_messages(entity, ids=msg.reply_to_msg_id)
-                    if candidate and media_from_telegram(candidate):
-                        media_msg = candidate
-                except Exception:
-                    pass
-            if media_msg is None:
-                try:
-                    previous = await client.get_messages(entity, limit=2)
-                    for candidate in previous:
-                        if candidate.id != msg.id and media_from_telegram(candidate):
-                            media_msg = candidate
-                            break
-                except Exception:
-                    pass
-            if media_msg:
-                ok = await process_telegram_media(entity, media_msg, msg.message, tutorial, allow_plain_prompt=True)
-                print(f"{'✅ ACCEPTED' if ok else '❌ FAILED'}: {source_name} prompt msg={msg.id} media_msg={media_msg.id}", flush=True)
-    except Exception as e:
-        print("Telegram handler error:", repr(e), flush=True)
-
-def allowed_domain(url):
-    try:
-        host = (urllib.parse.urlparse(url).hostname or "").lower()
-        if not host:
-            return False
-        return any(host == d or host.endswith("." + d) for d in WEB_ALLOWED_DOMAINS)
-    except Exception:
-        return False
-
-async def robots_allowed(url):
-    try:
-        parsed = urllib.parse.urlparse(url)
-        robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-        rp = urllib.robotparser.RobotFileParser()
-        rp.set_url(robots_url)
-        # Network access through urllib is blocking, so use a conservative
-        # rule: if no explicit allowlist exists, do not reuse page media.
-        return WEB_MEDIA_REUSE and allowed_domain(url)
-    except Exception:
-        return False
-
-def feed_entries(xml_text):
-    root = ET.fromstring(xml_text)
-    items = []
-    for item in root.findall(".//item"):
-        def txt(tag):
-            x = item.find(tag)
-            return (x.text or "").strip() if x is not None and x.text else ""
-        link = txt("link")
-        title = txt("title")
-        desc = txt("description")
-        pub = txt("pubDate")
-        enclosure = item.find("enclosure")
-        media_url = enclosure.attrib.get("url", "") if enclosure is not None else ""
-        media_type = enclosure.attrib.get("type", "") if enclosure is not None else ""
-        items.append((title, link, desc, pub, media_url, media_type))
-    return items
-
-def extract_media_from_html(page_url, html_text):
-    soup = BeautifulSoup(html_text, "html.parser")
-    og_image = soup.find("meta", attrs={"property": "og:image"})
-    og_video = soup.find("meta", attrs={"property": "og:video"})
-    if og_video and og_video.get("content"):
-        return urllib.parse.urljoin(page_url, og_video["content"]), "video"
-    if og_image and og_image.get("content"):
-        return urllib.parse.urljoin(page_url, og_image["content"]), "photo"
-    for video in soup.find_all("video"):
-        src = video.get("src")
-        if src:
-            return urllib.parse.urljoin(page_url, src), "video"
-        source = video.find("source")
-        if source and source.get("src"):
-            return urllib.parse.urljoin(page_url, source["src"]), "video"
-    return "", ""
-
-async def fetch_url(session, url, max_bytes=6_000_000):
-    async with session.get(
-        url,
-        timeout=aiohttp.ClientTimeout(total=25),
-        headers={"User-Agent": USER_AGENT},
-        allow_redirects=True
-    ) as r:
-        if r.status != 200:
-            return "", "", r.headers.get("content-type", "")
-        body = await r.content.read(max_bytes)
-        return body.decode("utf-8", "ignore"), str(r.url), r.headers.get("content-type", "")
-
-async def fetch_binary(session, url, max_bytes=30_000_000):
-    async with session.get(
-        url,
-        timeout=aiohttp.ClientTimeout(total=45),
-        headers={"User-Agent": USER_AGENT},
-        allow_redirects=True
-    ) as r:
-        if r.status != 200:
-            return None, r.headers.get("content-type", "")
-        return await r.content.read(max_bytes), r.headers.get("content-type", "")
-
-async def scan_web_trends():
-    if not TREND_RSS_URLS:
-        return
-    headers = {"User-Agent": USER_AGENT}
-    async with aiohttp.ClientSession(headers=headers) as session:
-        candidates = []
-        for feed_url in TREND_RSS_URLS:
-            try:
-                xml, _, ctype = await fetch_url(session, feed_url, max_bytes=5_000_000)
-                if not xml:
-                    continue
-                for title, link, desc, pub, enclosure, media_type in feed_entries(xml):
-                    if link:
-                        candidates.append((title, link, desc, pub, enclosure, media_type))
-            except Exception as e:
-                print("RSS error:", feed_url, e)
-
-        # Newest/relevant items first. RSS feeds are the discovery layer;
-        # the content itself is published only when prompt + tutorial + media
-        # are all available and web media reuse is enabled for the domain.
-        candidates = candidates[:MAX_WEB_ITEMS_PER_SCAN]
-
-        for title, link, desc, pub, enclosure, media_type in candidates:
-            try:
-                if not allowed_domain(link):
-                    # Discovery is allowed, but automatic media reposting is
-                    # intentionally blocked until the domain is allowlisted.
-                    continue
-
-                page_html, final_url, ctype = await fetch_url(session, link, max_bytes=8_000_000)
-                if not page_html:
-                    continue
-
-                soup = BeautifulSoup(page_html, "html.parser")
-                main_text = soup.get_text("\n", strip=True)
-                combined = f"{title}\n{desc}\n{main_text}"
-                prompt, tutorial = parse_prompt_tutorial(combined)
-                if not prompt:
-                    continue
-
-                media_url = enclosure
-                kind = "video" if "video" in (media_type or "").lower() else "photo"
-                if not media_url:
-                    media_url, kind = extract_media_from_html(final_url, page_html)
-                if not media_url or not await robots_allowed(final_url):
-                    continue
-
-                media_bytes, mtype = await fetch_binary(session, media_url)
-                if not media_bytes:
-                    continue
-                if "video" in (mtype or "").lower() or kind == "video":
-                    ext = ".mp4"
-                else:
-                    ext = ".jpg"
-
-                source_key = hashlib.sha256(final_url.encode()).hexdigest()
-                await save_and_publish(
-                    media_bytes,
-                    f"web_{source_key[:16]}{ext}",
-                    "web",
-                    urllib.parse.urlparse(final_url).netloc,
-                    source_key,
-                    prompt,
-                    tutorial,
-                    final_url
-                )
-            except Exception as e:
-                print("Web item error:", repr(e))
-
-async def web_trend_loop():
-    while True:
-        try:
-            print("🌐 Running worldwide web trend scan...")
-            await scan_web_trends()
-        except Exception as e:
-            print("Web scan error:", repr(e))
-        await asyncio.sleep(TREND_SCAN_INTERVAL)
-
-async def health(request):
-    return web.json_response({
-        "ok": True,
-        "service": "Visual Prompt AI",
-        "telegram_monitor": True,
-        "web_trend_scanner": True,
-        "web_scan_interval_seconds": TREND_SCAN_INTERVAL
-    })
-
-async def home(request):
-    return web.Response(text="""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Visual Prompt AI</title><style>body{font-family:Arial;background:#111827;color:#fff;text-align:center;padding:50px}a{display:inline-block;margin:10px;padding:14px 22px;background:#fff;color:#111827;border-radius:10px;text-decoration:none;font-weight:700}</style></head><body><h1>🎨 Visual Prompt AI</h1><p>AI photo/video prompt delivery service is online.</p><a href="/health">Health Check</a><a href="https://t.me/VisualPromptAIBot">Open Bot</a></body></html>""", content_type="text/html")
-
-async def landing(request):
-    cid = request.match_info["content_id"]
-    bot_link = f"https://t.me/{BOT_USERNAME}?start=content_{urllib.parse.quote(cid)}"
-    smartlink = "https://www.profitableratecpmnetwork.com/herywwsc?key=a8803ae52732f8b9dc5b4aaf1ba40e0a"
-
-    body = f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<meta name="theme-color" content="#0b1020">
-<title>Visual Prompt AI — Download</title>
-<style>
-*{{box-sizing:border-box}}
-body{{margin:0;background:linear-gradient(180deg,#070b16,#111827 55%,#0b1020);color:#fff;font-family:Inter,Arial,sans-serif}}
-.wrap{{max-width:720px;margin:auto;padding:18px 14px 40px}}
-.hero{{padding:26px 18px;text-align:center}}
-.logo{{width:64px;height:64px;border-radius:20px;margin:0 auto 14px;background:linear-gradient(135deg,#7c3aed,#06b6d4);display:flex;align-items:center;justify-content:center;font-size:31px;box-shadow:0 10px 35px rgba(124,58,237,.3)}}
-h1{{font-size:28px;margin:8px 0}} .sub{{color:#aeb8ca;font-size:14px;line-height:1.6}}
-.card{{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.10);border-radius:20px;padding:18px;margin:14px 0;backdrop-filter:blur(10px)}}
-.ad{{display:flex;justify-content:center;align-items:center;min-height:90px;overflow:hidden}}
-.ad-label{{font-size:10px;color:#75809a;text-align:center;letter-spacing:1px;margin-bottom:8px}}
-.download{{width:100%;border:0;border-radius:15px;padding:17px 20px;background:linear-gradient(90deg,#7c3aed,#2563eb);color:#fff;font-size:17px;font-weight:800;cursor:pointer;box-shadow:0 12px 28px rgba(37,99,235,.28)}}
-.download:active{{transform:scale(.98)}}
-.step{{display:flex;gap:12px;align-items:flex-start;margin:13px 0}} .num{{min-width:30px;height:30px;border-radius:50%;background:#24304a;display:flex;align-items:center;justify-content:center;font-weight:800}}
-.note{{font-size:12px;color:#8f9bb1;line-height:1.55;text-align:center}}
-footer{{text-align:center;color:#667085;font-size:11px;padding-top:8px}}
-</style>
-
-<!-- Adsterra Social Bar -->
-<script src="https://pl31392177.profitableratecpmnetwork.com/e8/1f/77/e81f77dcaabfb52998ffb6fe2e50a4b8.js"></script>
-</head>
-<body>
-<div class="wrap">
-
-<section class="hero">
-  <div class="logo">✨</div>
-  <h1>Visual Prompt AI</h1>
-  <div class="sub">Get the original AI photo/video with the full prompt and tutorial through Telegram.</div>
-</section>
-
-<!-- Native Ad -->
-<div class="card">
-  <div class="ad-label">ADVERTISEMENT</div>
-  <div class="ad">
-    <script async="async" data-cfasync="false" src="https://pl31392178.profitableratecpmnetwork.com/c5399e7ba5336815e27f57a310183960/invoke.js"></script>
-    <div id="container-c5399e7ba5336815e27f57a310183960"></div>
-  </div>
-</div>
-
-<!-- 300x250 Banner -->
-<div class="card">
-  <div class="ad-label">ADVERTISEMENT</div>
-  <div class="ad" style="min-height:250px">
-    <script>
-      atOptions = {{
-        'key' : '27f7adc1905b29d75422693fb24c5c27',
-        'format' : 'iframe',
-        'height' : 250,
-        'width' : 300,
-        'params' : {{}}
-      }};
-    </script>
-    <script src="https://www.highrevenueformat.com/27f7adc1905b29d75422693fb24c5c27/invoke.js"></script>
-  </div>
-</div>
-
-<div class="card">
-  <div class="step"><div class="num">1</div><div><b>Download APK</b><br><span class="sub">Tap the download button to open the advertising Smartlink.</span></div></div>
-  <div class="step"><div class="num">2</div><div><b>Continue Download</b><br><span class="sub">Return here and continue to the Telegram Bot for the photo/video + full prompt.</span></div></div>
-</div>
-
-<div class="card" style="text-align:center">
-  <button id="downloadBtn" class="download">⬇️ Download APK</button>
-  <p id="hint" class="note">Tap Download APK to open the Smartlink. Return here and tap Continue Download.</p>
-</div>
-
-<!-- Adsterra Popunder -->
-<script src="https://pl31392175.profitableratecpmnetwork.com/24/9e/8f/249e8ffb48623ecc2f8419c35b6bef1b.js"></script>
-
-<div class="card note">
-  🔐 Your prompt is delivered by <b>@{html.escape(BOT_USERNAME)}</b> after the required Telegram subscription is verified.
-</div>
-
-<footer>© Visual Prompt AI</footer>
-</div>
-
-<script>
-(function(){{
-  const key = "visual_prompt_download_{html.escape(cid)}";
-  const btn = document.getElementById("downloadBtn");
-  const hint = document.getElementById("hint");
-  let firstDone = false;
-  try {{ firstDone = localStorage.getItem(key) === "1"; }} catch(e) {{}}
-
-  function setFirstDone() {{
-    firstDone = true;
-    try {{ localStorage.setItem(key, "1"); }} catch(e) {{}}
-  }}
-
-  if (firstDone) {{
-    btn.textContent = "➡️ Continue Download";
-    hint.textContent = "Smartlink step completed. Tap Continue Download to open the Telegram Bot.";
-  }}
-
-  btn.addEventListener("click", function() {{
-    if (!firstDone) {{
-      setFirstDone();
-      btn.textContent = "➡️ Continue Download";
-      hint.textContent = "Smartlink opened. Return here and tap Continue Download to open the Telegram Bot.";
-      window.open({json.dumps(smartlink)}, "_blank", "noopener");
-      return;
-    }}
-    window.location.href = {json.dumps(bot_link)};
-  }});
-}})();
-</script>
-</body>
-</html>"""
-    return web.Response(text=body, content_type="text/html")
+def landing_html(storage_id,title,kind,prompt):
+    title=html_escape(title or "Visual Prompt"); kind=html_escape(kind or "Media"); prompt=html_escape(prompt or "Visual prompt")
+    tg=f"https://t.me/{DOWNLOAD_BOT_USERNAME}?start=dl_{storage_id}"
+    if ADSTERRA_SMARTLINK:
+        href=ADSTERRA_SMARTLINK; label="Continue to Download"
+        js=f"""const b=document.getElementById('b'),n=document.getElementById('n'),tg={tg!r},ad={ADSTERRA_SMARTLINK!r},k='vpai_{storage_id}';
+function mode(){{b.href=tg;b.textContent='Get Original Media';n.textContent='Tap again to open Telegram and receive the original file.'}}
+if(sessionStorage.getItem(k)==='1')mode();
+b.onclick=function(){{if(sessionStorage.getItem(k)!=='1'){{sessionStorage.setItem(k,'1');b.href=ad}}else b.href=tg}};"""
+    else:
+        href=tg; label="Get Original Media"; js=""
+    return f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title} | VisualPrompt AI</title><style>
+*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;padding:22px 12px;font-family:Arial,sans-serif;color:#fff;background:linear-gradient(180deg,#70bd79,#55a99a 38%,#347fb1 72%,#2364a4)}}.page{{max-width:480px;margin:auto}}.brand{{text-align:center;margin:8px 0 22px}}.logo{{width:92px;height:92px;margin:auto;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.16);border:2px solid rgba(255,255,255,.5);font-size:24px;font-weight:800}}.brand h1{{margin:14px 0 5px;font-size:25px}}.brand p{{margin:0;color:rgba(255,255,255,.78);font-size:13px}}.card{{padding:21px;border-radius:24px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.28);box-shadow:0 18px 45px rgba(0,0,0,.14);backdrop-filter:blur(12px)}}.icon{{width:78px;height:78px;margin:0 auto 14px;border-radius:20px;display:flex;align-items:center;justify-content:center;background:#fff;color:#277bb0;font-weight:800;font-size:22px}}.title{{text-align:center}}.title h2{{margin:0;font-size:22px;word-break:break-word}}.badge{{display:inline-block;margin-top:8px;padding:5px 11px;border-radius:30px;background:rgba(255,255,255,.18);font-size:12px}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:18px 0}}.item{{padding:12px 8px;border-radius:13px;text-align:center;background:rgba(255,255,255,.12)}}.item small{{display:block;color:rgba(255,255,255,.68);font-size:10px;text-transform:uppercase;margin-bottom:5px}}.prompt{{margin-top:16px;padding:14px;border-radius:13px;background:rgba(0,0,0,.12);font-size:13px;line-height:1.65;white-space:pre-wrap;word-break:break-word}}.btn{{display:block;margin-top:20px;padding:15px;border-radius:13px;background:#fff;color:#2775aa;text-align:center;text-decoration:none;font-size:16px;font-weight:800}}.note{{margin:11px 0 0;text-align:center;color:rgba(255,255,255,.72);font-size:11px;line-height:1.5}}.footer{{margin:20px 0 4px;text-align:center;font-size:11px;color:rgba(255,255,255,.65)}}</style></head>
+<body><main class="page"><header class="brand"><div class="logo">VP</div><h1>VisualPrompt AI</h1><p>AI Photo &amp; Video Prompts</p></header><section class="card"><div class="icon">{kind[:3].upper()}</div><div class="title"><h2>{title}</h2><span class="badge">{kind}</span></div><div class="grid"><div class="item"><small>Media</small><strong>{kind}</strong></div><div class="item"><small>Source</small><strong>Telegram</strong></div></div><div class="prompt"><strong>Prompt</strong><br>{prompt}</div><a id="b" class="btn" href="{href}" rel="nofollow sponsored noopener noreferrer">{label}</a><p id="n" class="note">Continue to receive the original media.</p></section><div class="footer">© 2026 VisualPrompt AI</div></main><script>{js}</script></body></html>"""
 
 async def start_web():
-    app = web.Application()
-    app.router.add_get("/", home)
-    app.router.add_get("/health", health)
-    app.router.add_get("/content/{content_id}", landing)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    print(f"🌍 Web server listening on {PORT}")
-    return runner
+    async def health(request): return web.Response(text="VisualPrompt AI is alive ✅")
+    async def download(request):
+        try:
+            sid=int(request.match_info["storage_msg_id"])
+            title=request.query.get("title","Visual Prompt"); kind=request.query.get("type","Media"); prompt=request.query.get("prompt","")
+            return web.Response(text=landing_html(sid,title,kind,prompt),content_type="text/html")
+        except Exception: return web.Response(text="Invalid download link",status=400)
+    app=web.Application(); app.router.add_get("/",health); app.router.add_get("/health",health); app.router.add_get("/download/{storage_msg_id}",download)
+    runner=web.AppRunner(app); await runner.setup(); port=int(os.environ.get("PORT","8080")); await web.TCPSite(runner,"0.0.0.0",port).start()
+    log.info("Web server started on port %s",port)
+
+async def save_storage(message):
+    try:
+        saved=await client.forward_messages(STORAGE_CHANNEL_ID,message)
+        sid=saved[0].id if isinstance(saved,list) else saved.id
+        STATS["storage_saved"]+=1; log.info("Stored media | %s",sid); return sid
+    except Exception:
+        STATS["storage_failed"]+=1; log.exception("Storage save failed"); return None
+
+async def publish(dest,message,caption):
+    try:
+        await client.send_file(dest,file=message,caption=caption,parse_mode="html",link_preview=False)
+        return True
+    except FloodWaitError as e:
+        log.warning("FloodWait %ss | %s",e.seconds,dest); await asyncio.sleep(e.seconds+5); return False
+    except Exception:
+        STATS["send_failed"]+=1; log.exception("Publish failed | %s",dest); return False
+
+def caption(sid,title,kind,prompt):
+    url=f"{PUBLIC_BASE_URL}/download/{sid}?title={quote(title)}&type={quote(kind)}&prompt={quote(prompt)}"
+    return f"🎨 <b>{html_escape(title)}</b>\n\n🎬 <b>Type:</b> {html_escape(kind)}\n📝 <b>Prompt:</b>\n{html_escape(prompt or 'Visual prompt')}\n\n⬇️ <b><a href=\"{url}\">Get Original {html_escape(kind)}</a></b>\n\n✨ <b>VisualPrompt AI</b>"
+
+@client.on(events.NewMessage())
+async def handler(event):
+    global ME_ID
+    try:
+        if event.is_private:
+            sender=await event.get_sender()
+            if sender and sender.id==ME_ID:
+                cmd=(event.text or "").strip().lower()
+                if cmd=="/alive":
+                    await event.reply(f"✅ <b>Online</b>\\n📥 Queue: {len(QUEUE)}\\n📤 Sent: {STATS['sent']}\\n🚫 Duplicates: {STATS['duplicates']}\\n💾 Storage: {STATS['storage_saved']}",parse_mode="html"); return
+                if cmd=="/stats":
+                    await event.reply(f"📊 <b>VisualPrompt AI</b>\\n\\n📤 Sent: {STATS['sent']}\\n📥 Queued: {STATS['queued']}\\n🚫 Duplicates: {STATS['duplicates']}\\n💾 Storage: {STATS['storage_saved']}\\n❌ Storage Failed: {STATS['storage_failed']}\\n📷 Photos: {STATS['photos']}\\n🎬 Videos: {STATS['videos']}\\n🗃️ Queue: {len(QUEUE)}",parse_mode="html"); return
+        kind=media_kind(event.message)
+        if not kind or not await allowed(event): return
+        prompt=clean_prompt(event.message.text or event.message.message or "")
+        if blocked(prompt): log.info("Blocked promotional post | %s",event.id); return
+        k=key(event)
+        if k in SEEN or k in PUBLISHED: STATS["duplicates"]+=1; return
+        first=prompt.splitlines()[0].strip() if prompt else ""
+        title=first[:80] if first else ("AI Photo Prompt" if kind=="Photo" else "AI Video Prompt")
+        QUEUE.append({"message":event.message,"prompt":prompt,"kind":kind,"title":title,"key":k}); SEEN.add(k); STATS["queued"]+=1
+        log.info("Queued %s | %s | queue=%s",kind,title,len(QUEUE))
+    except Exception: log.exception("Event handler failed")
+
+async def worker():
+    while True:
+        if not QUEUE: await asyncio.sleep(5); continue
+        item=QUEUE.pop(0)
+        try:
+            sid=await save_storage(item["message"])
+            if not sid: continue
+            cap=caption(sid,item["title"],item["kind"],item["prompt"])
+            success=0
+            for dest in DEST_CHANNELS:
+                if await publish(dest,item["message"],cap):
+                    success+=1; STATS["sent"]+=1
+                    STATS["photos" if item["kind"]=="Photo" else "videos"]+=1
+                await asyncio.sleep(CHANNEL_DELAY_SECONDS)
+            if success: PUBLISHED.add(item["key"])
+            await asyncio.sleep(POST_INTERVAL_SECONDS)
+        except Exception:
+            log.exception("Worker error"); await asyncio.sleep(10)
 
 async def main():
-    init_db()
-    # Start HTTP first so Render's health check has a live endpoint even if
-    # the Telethon session needs to reconnect.
+    global ME_ID
     await start_web()
-    asyncio.create_task(web_trend_loop())
+    await client.connect()
+    if not await client.is_user_authorized(): raise RuntimeError("Invalid SESSION_STRING")
+    me=await client.get_me(); ME_ID=me.id
+    log.info("VisualPrompt AI started | user=%s | storage=%s | bot=@%s",ME_ID,STORAGE_CHANNEL_ID,DOWNLOAD_BOT_USERNAME)
+    log.info("Destinations: %s",DEST_CHANNELS)
+    log.info("Sources: %s",SOURCE_CHANNELS or "all accessible chats except ignored")
+    asyncio.create_task(worker())
+    try: await client.run_until_disconnected()
+    finally: await client.disconnect()
 
-    while True:
-        try:
-            await client.start()
-            me = await client.get_me()
-            print("✅ Telegram user client online:", getattr(me, "username", None) or me.id, flush=True)
-            try:
-                storage = await client.get_entity(STORAGE_CHANNEL_ID)
-                print("💾 Storage channel OK:", getattr(storage, "title", None) or getattr(storage, "username", None) or STORAGE_CHANNEL_ID, flush=True)
-            except Exception as e:
-                print("❌ Storage channel ERROR:", repr(e), flush=True)
-            for ch in PUBLISHED_CHANNELS:
-                try:
-                    ent = await client.get_entity(ch)
-                    print("📢 Publish target OK:", ch, "=>", getattr(ent, "title", None) or getattr(ent, "username", None), flush=True)
-                except Exception as e:
-                    print("❌ Publish target ERROR:", ch, repr(e), flush=True)
-            dialogs = 0
-            broadcasts = 0
-            source_names = []
-            async for d in client.iter_dialogs():
-                dialogs += 1
-                ent = d.entity
-                if isinstance(ent, Channel) and not getattr(ent, "megagroup", False):
-                    broadcasts += 1
-                    if utils.get_peer_id(ent) != STORAGE_CHANNEL_ID and not channel_is_publish_target(ent):
-                        source_names.append(getattr(ent, "title", None) or getattr(ent, "username", None) or str(ent.id))
-            print(f"📡 Monitoring ALL joined broadcast channels automatically. dialogs={dialogs}, broadcasts={broadcasts}, sources={len(source_names)}", flush=True)
-            for name in source_names:
-                print(f"   • SOURCE: {name}", flush=True)
-            print("🌐 Web trend scanner enabled.", flush=True)
-            await client.run_until_disconnected()
-        except Exception as e:
-            print("❌ Telegram client error:", repr(e))
-            await asyncio.sleep(15)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__=="__main__": asyncio.run(main())

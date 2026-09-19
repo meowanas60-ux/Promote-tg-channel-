@@ -1,5 +1,6 @@
 telethon
 python-dotenv
+requests
 aiohttp
+Pillow
 aiogram
-beautifulsoup4

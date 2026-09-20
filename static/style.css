@@ -1,0 +1,142 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #0b0f17;
+  color: #eef2f7;
+  font-family: Arial, sans-serif;
+}
+
+header {
+  padding: 28px 18px;
+  border-bottom: 1px solid #202838;
+  background: #101621;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.brand {
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.sub {
+  color: #9ba7ba;
+  margin-top: 7px;
+  font-size: 13px;
+}
+
+.search {
+  margin-top: 18px;
+}
+
+.search input {
+  width: 100%;
+  max-width: 700px;
+  background: #171e2b;
+  border: 1px solid #2a3548;
+  border-radius: 12px;
+  padding: 14px;
+  color: white;
+  outline: none;
+}
+
+main {
+  max-width: 1100px;
+  margin: auto;
+  padding: 24px 18px;
+}
+
+.hero {
+  padding: 20px 0 28px;
+}
+
+.hero h1 {
+  font-size: 30px;
+  margin: 0 0 8px;
+}
+
+.hero p {
+  color: #9ba7ba;
+}
+
+.video {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 11px 15px;
+  border-radius: 10px;
+  background: #243047;
+  color: white;
+  text-decoration: none;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns:
+    repeat(
+      auto-fit,
+      minmax(280px, 1fr)
+    );
+  gap: 16px;
+}
+
+.card {
+  display: flex;
+  gap: 14px;
+  background: #121927;
+  border: 1px solid #222d40;
+  border-radius: 16px;
+  padding: 16px;
+}
+
+.icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 14px;
+  background: #202b3e;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  color: #b9c7da;
+  flex: none;
+}
+
+.info {
+  min-width: 0;
+}
+
+.info h2 {
+  font-size: 18px;
+  margin: 0 0 5px;
+}
+
+.version {
+  color: #7f9bc4;
+  font-size: 13px;
+}
+
+.info p {
+  color: #aab4c3;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.download {
+  display: inline-block;
+  background: #eef2f7;
+  color: #10151e;
+  padding: 9px 13px;
+  border-radius: 9px;
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.loading,
+.empty {
+  padding: 40px;
+  text-align: center;
+  color: #9ba7ba;
+}

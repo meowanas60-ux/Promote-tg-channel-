@@ -1,16 +1,47 @@
 import os
 import re
 import sqlite3
+import requests
 
 
-# Private Telegram storage channel ID
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+
 STORAGE_CHANNEL = os.getenv(
     "STORAGE_CHANNEL",
     "-1003976996787"
 ).strip()
 
 
+def telegram_api(method, data):
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN is not configured")
+
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{BOT_TOKEN}/{method}"
+    )
+
+    response = requests.post(
+        url,
+        json=data,
+        timeout=30
+    )
+
+    result = response.json()
+
+    if not result.get("ok"):
+        raise RuntimeError(
+            result.get(
+                "description",
+                "Telegram API error"
+            )
+        )
+
+    return result["result"]
+
+
 def parse_caption(caption=""):
+
     def get(label):
         match = re.search(
             rf"(?:^|\n)\s*{re.escape(label)}\s*:\s*(.+)",
@@ -18,11 +49,20 @@ def parse_caption(caption=""):
             re.IGNORECASE
         )
 
-        return match.group(1).strip() if match else ""
+        return (
+            match.group(1).strip()
+            if match
+            else ""
+        )
 
     return {
-        "name": get("Name") or get("App Name"),
+        "name": (
+            get("Name")
+            or get("App Name")
+        ),
+
         "version": get("Version"),
+
         "description": get("Description")
     }
 
@@ -31,13 +71,14 @@ def save_post(post, db_path):
 
     document = post.get("document")
 
-    # Only process document posts
     if not document:
         return False
 
-    file_name = document.get("file_name", "")
+    file_name = document.get(
+        "file_name",
+        ""
+    )
 
-    # Only process APK files
     if not file_name.lower().endswith(".apk"):
         return False
 
@@ -45,7 +86,6 @@ def save_post(post, db_path):
         post.get("caption", "")
     )
 
-    # Name is required
     if not parsed["name"]:
         return False
 
@@ -158,35 +198,166 @@ def save_post(post, db_path):
     return True
 
 
+def send_app_to_user(
+    user_id,
+    message_id,
+    db_path
+):
+
+    conn = sqlite3.connect(db_path)
+
+    conn.row_factory = sqlite3.Row
+
+    app = conn.execute(
+        """
+        SELECT *
+        FROM apps
+        WHERE telegram_message_id = ?
+        """,
+        (message_id,)
+    ).fetchone()
+
+    conn.close()
+
+    if not app:
+        telegram_api(
+            "sendMessage",
+            {
+                "chat_id": user_id,
+                "text": (
+                    "❌ App not found.\n\n"
+                    "Please try again from the website."
+                )
+            }
+        )
+
+        return False
+
+    caption = (
+        f"📱 {app['name']}\n\n"
+        f"📦 Version: "
+        f"{app['version'] or 'Latest'}\n\n"
+        f"📝 {app['description'] or 'No description'}"
+    )
+
+    # Send app photo first
+    if app["image_file_id"]:
+
+        telegram_api(
+            "sendPhoto",
+            {
+                "chat_id": user_id,
+                "photo": app["image_file_id"]
+            }
+        )
+
+    # Send APK
+    telegram_api(
+        "sendDocument",
+        {
+            "chat_id": user_id,
+            "document": app["document_file_id"],
+            "caption": caption
+        }
+    )
+
+    return True
+
+
 def handle_update(update, db_path):
 
-    # Telegram channel post
+    # ------------------------------------------------
+    # 1. New or edited channel post
+    # ------------------------------------------------
+
     post = (
         update.get("channel_post")
         or update.get("edited_channel_post")
     )
 
-    if not post:
+    if post:
+
+        chat = post.get(
+            "chat",
+            {}
+        )
+
+        actual_channel_id = str(
+            chat.get("id", "")
+        ).strip()
+
+        if (
+            STORAGE_CHANNEL
+            and actual_channel_id
+            != STORAGE_CHANNEL
+        ):
+            return False
+
+        return save_post(
+            post,
+            db_path
+        )
+
+
+    # ------------------------------------------------
+    # 2. User starts the Telegram bot
+    # ------------------------------------------------
+
+    message = update.get("message")
+
+    if not message:
         return False
 
-    chat = post.get(
-        "chat",
-        {}
-    )
-
-    # Actual Telegram channel ID
-    actual_channel_id = str(
-        chat.get("id", "")
+    text = (
+        message.get("text")
+        or ""
     ).strip()
 
-    # Only accept posts from our private channel
-    if (
-        STORAGE_CHANNEL
-        and actual_channel_id != STORAGE_CHANNEL
-    ):
+    if not text.startswith("/start"):
         return False
 
-    return save_post(
-        post,
+    user_id = message["chat"]["id"]
+
+    parts = text.split(
+        maxsplit=1
+    )
+
+    if len(parts) != 2:
+        telegram_api(
+            "sendMessage",
+            {
+                "chat_id": user_id,
+                "text": (
+                    "👋 Welcome!\n\n"
+                    "Please open an app "
+                    "from the website."
+                )
+            }
+        )
+
+        return True
+
+    try:
+        message_id = int(
+            parts[1]
+        )
+
+    except ValueError:
+
+        telegram_api(
+            "sendMessage",
+            {
+                "chat_id": user_id,
+                "text": (
+                    "❌ Invalid app link."
+                )
+            }
+        )
+
+        return True
+
+    return send_app_to_user(
+        user_id,
+        message_id,
         db_path
     )

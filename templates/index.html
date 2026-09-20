@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+
+  <title>GETS MODS AND APK PREMIUM FREE 👀</title>
+
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+
+<header>
+
+  <div class="brand">
+    GETS MODS AND APK PREMIUM FREE 👀
+  </div>
+
+  <div class="sub">
+    Apps you are authorized to distribute
+  </div>
+
+  <div class="search">
+    <input
+      id="q"
+      placeholder="Search apps..."
+      oninput="loadApps()"
+    >
+  </div>
+
+</header>
+
+
+<main>
+
+  <section class="hero">
+
+    <h1>Latest Apps</h1>
+
+    <p>
+      New APK posts from the Telegram storage channel.
+    </p>
+
+    <a
+      class="video"
+      href="https://t.me/BomssssssssBot"
+      target="_blank"
+    >
+      🎬 Video Downloader Bot
+    </a>
+
+  </section>
+
+
+  <section id="apps" class="grid">
+
+    <div class="loading">
+      Loading...
+    </div>
+
+  </section>
+
+</main>
+
+
+<script>
+
+async function loadApps(){
+
+  try {
+
+    const q =
+      document
+        .getElementById('q')
+        .value
+        .trim();
+
+    const res =
+      await fetch(
+        '/api/apps?q=' +
+        encodeURIComponent(q)
+      );
+
+    const data =
+      await res.json();
+
+    const box =
+      document.getElementById('apps');
+
+
+    if(
+      !data.apps ||
+      !data.apps.length
+    ){
+
+      box.innerHTML =
+        '<div class="empty">No apps found yet.</div>';
+
+      return;
+    }
+
+
+    box.innerHTML =
+      data.apps
+      .map(a => `
+
+        <article class="card">
+
+          <div class="icon">
+            APK
+          </div>
+
+          <div class="info">
+
+            <h2>
+              ${escapeHtml(a.name)}
+            </h2>
+
+            <div class="version">
+              ${escapeHtml(
+                a.version || 'Latest'
+              )}
+            </div>
+
+            <p>
+              ${escapeHtml(
+                a.description ||
+                'No description'
+              )}
+            </p>
+
+            <a
+              class="download"
+              href="${a.download_url}"
+              target="_blank"
+            >
+              Download
+            </a>
+
+          </div>
+
+        </article>
+
+      `)
+      .join('');
+
+  }
+
+  catch(e){
+
+    document.getElementById('apps')
+      .innerHTML =
+      '<div class="empty">Could not load apps.</div>';
+
+  }
+
+}
+
+
+function escapeHtml(s){
+
+  return String(s).replace(
+    /[&<>"']/g,
+
+    c => ({
+
+      '&':'&amp;',
+      '<':'&lt;',
+      '>':'&gt;',
+      '"':'&quot;',
+      "'":'&#039;'
+
+    }[c])
+
+  );
+
+}
+
+
+loadApps();
+
+</script>
+
+</body>
+</html>

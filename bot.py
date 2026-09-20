@@ -1,54 +1,128 @@
-import os, asyncio, logging
-from aiogram import Bot, Dispatcher
-from aiogram.filters import CommandStart, Command
-from aiogram.types import Message
-from aiogram.exceptions import TelegramAPIError
+import os
+import re
+import sqlite3
 
-BOT_TOKEN=os.environ.get("BOT_TOKEN")
-if not BOT_TOKEN: raise RuntimeError("BOT_TOKEN environment variable is missing")
-STORAGE_CHANNEL_ID=int(os.environ.get("STORAGE_CHANNEL_ID","-1003976996787"))
-OWNER_ID=int(os.environ.get("OWNER_ID","8899691272"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+CHANNEL_USERNAME = os.getenv(
+    "STORAGE_CHANNEL_USERNAME", "sahatanas"
+).lstrip("@")
 
-logging.basicConfig(level=logging.INFO,format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
-log=logging.getLogger("visual_prompt_bot")
-bot=Bot(token=BOT_TOKEN); dp=Dispatcher()
 
-@dp.message(CommandStart())
-async def start(message: Message):
-    if not message.text: return
-    args=message.text.split(maxsplit=1)
-    if len(args)==1:
-        await message.answer("👋 Welcome to VisualPrompt AI!\n\n🎨 Use the Download button on a published photo/video post to receive the original media here.")
-        return
-    payload=args[1].strip()
-    if not payload.startswith("dl_"):
-        await message.answer("❌ Invalid download link. Please use the button from a published post."); return
-    try:
-        storage_id=int(payload[3:])
-        if storage_id<=0: raise ValueError
-    except (ValueError,TypeError):
-        await message.answer("❌ Invalid download link."); return
-    loading=await message.answer("⏳ Please wait...\n📦 Fetching the original media...")
-    try:
-        await bot.copy_message(message.chat.id,STORAGE_CHANNEL_ID,storage_id)
-        await loading.delete()
-    except TelegramAPIError:
-        log.exception("Media delivery failed")
-        await loading.edit_text("❌ Delivery failed. The media may be unavailable or the bot may not have access to the storage channel.")
-    except Exception:
-        log.exception("Unexpected delivery error")
-        await loading.edit_text("❌ An unexpected error occurred. Please try again later.")
+def parse_caption(caption=""):
+    def get(label):
+        match = re.search(
+            rf"(?:^|\n)\s*{re.escape(label)}\s*:\s*(.+)",
+            caption,
+            re.IGNORECASE
+        )
+        return match.group(1).strip() if match else ""
 
-@dp.message(Command("stats"))
-async def stats(message: Message):
-    if not message.from_user or message.from_user.id!=OWNER_ID: return
-    me=await bot.get_me()
-    await message.answer(f"📊 VisualPrompt AI Bot\n\n🤖 @{me.username}\n🆔 {me.id}\n💾 Storage: {STORAGE_CHANNEL_ID}\n👤 Owner: {OWNER_ID}\n✅ Running!")
+    return {
+        "name": get("Name") or get("App Name"),
+        "version": get("Version"),
+        "description": get("Description")
+    }
 
-async def main():
-    me=await bot.get_me()
-    log.info("VisualPrompt AI bot started: @%s | storage=%s",me.username,STORAGE_CHANNEL_ID)
-    try: await dp.start_polling(bot)
-    finally: await bot.session.close()
 
-if __name__=="__main__": asyncio.run(main())
+def save_post(post, db_path):
+    document = post.get("document")
+
+    if not document:
+        return False
+
+    file_name = document.get("file_name", "")
+
+    if not file_name.lower().endswith(".apk"):
+        return False
+
+    parsed = parse_caption(post.get("caption", ""))
+
+    if not parsed["name"]:
+        return False
+
+    photos = post.get("photo") or []
+
+    image_file_id = (
+        photos[-1].get("file_id", "")
+        if photos else ""
+    )
+
+    conn = sqlite3.connect(db_path)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS apps (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_message_id INTEGER UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            version TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            image_file_id TEXT DEFAULT '',
+            document_file_id TEXT DEFAULT '',
+            document_name TEXT DEFAULT '',
+            document_size INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    conn.execute("""
+        INSERT INTO apps (
+            telegram_message_id,
+            name,
+            version,
+            description,
+            image_file_id,
+            document_file_id,
+            document_name,
+            document_size
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+
+        ON CONFLICT(telegram_message_id)
+        DO UPDATE SET
+            name=excluded.name,
+            version=excluded.version,
+            description=excluded.description,
+            image_file_id=excluded.image_file_id,
+            document_file_id=excluded.document_file_id,
+            document_name=excluded.document_name,
+            document_size=excluded.document_size,
+            updated_at=CURRENT_TIMESTAMP
+    """, (
+        post["message_id"],
+        parsed["name"],
+        parsed["version"],
+        parsed["description"],
+        image_file_id,
+        document.get("file_id", ""),
+        file_name,
+        document.get("file_size", 0)
+    ))
+
+    conn.commit()
+    conn.close()
+
+    return True
+
+
+def handle_update(update, db_path):
+    post = (
+        update.get("channel_post")
+        or update.get("edited_channel_post")
+    )
+
+    if not post:
+        return False
+
+    chat = post.get("chat", {})
+
+    username = (
+        chat.get("username") or ""
+    ).lstrip("@").lower()
+
+    expected = CHANNEL_USERNAME.lower()
+
+    if expected and username and username != expected:
+        return False
+
+    return save_post(post, db_path)

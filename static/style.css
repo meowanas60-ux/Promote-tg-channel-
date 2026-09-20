@@ -1,142 +1,570 @@
 * {
   box-sizing: border-box;
+  }
+
+html {
+scroll-behavior: smooth;
 }
 
 body {
-  margin: 0;
-  background: #0b0f17;
-  color: #eef2f7;
-  font-family: Arial, sans-serif;
+margin: 0;
+background: #0b0f17;
+color: #eef2f7;
+font-family: Arial, Helvetica, sans-serif;
+line-height: 1.5;
 }
 
+/* =========================
+HEADER
+========================= */
+
 header {
-  padding: 28px 18px;
-  border-bottom: 1px solid #202838;
-  background: #101621;
-  position: sticky;
-  top: 0;
-  z-index: 5;
+padding: 22px 18px;
+border-bottom: 1px solid #202838;
+background: #101621;
 }
 
 .brand {
-  font-size: 22px;
-  font-weight: 800;
+font-size: 22px;
+font-weight: 800;
+line-height: 1.3;
 }
 
 .sub {
-  color: #9ba7ba;
-  margin-top: 7px;
-  font-size: 13px;
+margin-top: 7px;
+color: #9ba7ba;
+font-size: 13px;
 }
 
+/* =========================
+SEARCH
+========================= */
+
 .search {
-  margin-top: 18px;
+margin-top: 16px;
 }
 
 .search input {
-  width: 100%;
-  max-width: 700px;
-  background: #171e2b;
-  border: 1px solid #2a3548;
-  border-radius: 12px;
-  padding: 14px;
-  color: white;
-  outline: none;
+width: 100%;
+max-width: 700px;
+padding: 14px 16px;
+
+background: #171e2b;
+
+border: 1px solid #2a3548;
+border-radius: 12px;
+
+color: #ffffff;
+font-size: 15px;
+
+outline: none;
+
+transition:
+border-color 0.2s ease,
+box-shadow 0.2s ease;
 }
+
+.search input::placeholder {
+color: #738097;
+}
+
+.search input:focus {
+border-color: #5d7fb3;
+box-shadow: 0 0 0 3px rgba(93, 127, 179, 0.12);
+}
+
+/* =========================
+MAIN
+========================= */
 
 main {
-  max-width: 1100px;
-  margin: auto;
-  padding: 24px 18px;
+width: 100%;
+max-width: 1100px;
+
+margin: 0 auto;
+
+padding: 20px 18px 45px;
 }
 
+/* =========================
+HERO
+========================= */
+
 .hero {
-  padding: 20px 0 28px;
+padding: 14px 0 22px;
 }
 
 .hero h1 {
-  font-size: 30px;
-  margin: 0 0 8px;
+margin: 0 0 8px;
+
+font-size: 30px;
+line-height: 1.2;
 }
 
 .hero p {
-  color: #9ba7ba;
+margin: 0;
+
+color: #9ba7ba;
+font-size: 14px;
+}
+
+.hero-actions {
+display: flex;
+
+flex-wrap: wrap;
+
+gap: 10px;
+
+margin-top: 16px;
+}
+
+/* =========================
+BUTTONS
+========================= */
+
+.video,
+.smart-link,
+.download,
+.direct,
+.more-link {
+display: inline-flex;
+
+align-items: center;
+justify-content: center;
+
+min-height: 42px;
+
+padding: 10px 15px;
+
+border-radius: 10px;
+
+text-decoration: none;
+
+font-size: 14px;
+font-weight: 700;
+
+transition:
+transform 0.15s ease,
+opacity 0.15s ease;
+}
+
+.video:hover,
+.smart-link:hover,
+.download:hover,
+.direct:hover,
+.more-link:hover {
+transform: translateY(-1px);
+opacity: 0.9;
 }
 
 .video {
-  display: inline-block;
-  margin-top: 10px;
-  padding: 11px 15px;
-  border-radius: 10px;
-  background: #243047;
-  color: white;
-  text-decoration: none;
+background: #243047;
+color: #ffffff;
 }
 
-.grid {
-  display: grid;
-  grid-template-columns:
-    repeat(
-      auto-fit,
-      minmax(280px, 1fr)
-    );
-  gap: 16px;
-}
-
-.card {
-  display: flex;
-  gap: 14px;
-  background: #121927;
-  border: 1px solid #222d40;
-  border-radius: 16px;
-  padding: 16px;
-}
-
-.icon {
-  width: 64px;
-  height: 64px;
-  border-radius: 14px;
-  background: #202b3e;
-  display: grid;
-  place-items: center;
-  font-weight: 800;
-  color: #b9c7da;
-  flex: none;
-}
-
-.info {
-  min-width: 0;
-}
-
-.info h2 {
-  font-size: 18px;
-  margin: 0 0 5px;
-}
-
-.version {
-  color: #7f9bc4;
-  font-size: 13px;
-}
-
-.info p {
-  color: #aab4c3;
-  font-size: 13px;
-  line-height: 1.45;
+.smart-link {
+background: #eef2f7;
+color: #10151e;
 }
 
 .download {
-  display: inline-block;
-  background: #eef2f7;
-  color: #10151e;
-  padding: 9px 13px;
-  border-radius: 9px;
-  text-decoration: none;
-  font-weight: 700;
+background: #eef2f7;
+color: #10151e;
 }
+
+.direct {
+background: #243047;
+color: #ffffff;
+}
+
+/* =========================
+ADS
+========================= */
+
+.ad-wrap {
+width: 100%;
+
+margin: 8px auto 22px;
+
+padding: 10px;
+
+border: 1px solid #202838;
+border-radius: 14px;
+
+background: #0f1520;
+
+text-align: center;
+
+overflow: hidden;
+}
+
+.ad-label {
+margin-bottom: 8px;
+
+color: #66758c;
+
+font-size: 10px;
+
+text-transform: uppercase;
+
+letter-spacing: 0.12em;
+}
+
+/* 300x250 */
+
+.ad-300 {
+max-width: 330px;
+}
+
+.banner-300 {
+width: 300px;
+max-width: 100%;
+
+min-height: 250px;
+
+margin: 0 auto;
+
+display: grid;
+
+place-items: center;
+}
+
+/* Native ad */
+
+.native-ad {
+min-height: 100px;
+}
+
+.native-ad > div:not(.ad-label) {
+width: 100%;
+max-width: 100%;
+}
+
+/* =========================
+APP GRID
+========================= */
+
+.grid {
+display: grid;
+
+grid-template-columns:
+repeat(
+auto-fit,
+minmax(280px, 1fr)
+);
+
+gap: 16px;
+
+width: 100%;
+}
+
+/* =========================
+APP CARD
+========================= */
+
+.card {
+display: flex;
+
+gap: 14px;
+
+min-width: 0;
+
+padding: 16px;
+
+background: #121927;
+
+border: 1px solid #222d40;
+
+border-radius: 16px;
+
+transition:
+border-color 0.2s ease,
+transform 0.2s ease;
+}
+
+.card:hover {
+border-color: #34445f;
+
+transform: translateY(-2px);
+}
+
+/* =========================
+APP ICON
+========================= */
+
+.icon {
+width: 64px;
+height: 64px;
+
+flex: 0 0 64px;
+
+display: grid;
+
+place-items: center;
+
+border-radius: 14px;
+
+background: #202b3e;
+
+color: #b9c7da;
+
+font-size: 12px;
+
+font-weight: 800;
+}
+
+/* =========================
+APP INFORMATION
+========================= */
+
+.info {
+min-width: 0;
+flex: 1;
+}
+
+.info h2 {
+margin: 0 0 5px;
+
+font-size: 18px;
+
+line-height: 1.3;
+
+overflow-wrap: anywhere;
+}
+
+.version {
+color: #7f9bc4;
+
+font-size: 13px;
+}
+
+.info p {
+margin: 9px 0 13px;
+
+color: #aab4c3;
+
+font-size: 13px;
+
+line-height: 1.5;
+
+overflow-wrap: anywhere;
+}
+
+/* =========================
+CARD ACTIONS
+========================= */
+
+.card-actions {
+display: flex;
+
+flex-wrap: wrap;
+
+gap: 8px;
+}
+
+/* =========================
+MORE APPS
+========================= */
+
+.more-section {
+display: flex;
+
+justify-content: center;
+
+padding: 28px 0 5px;
+}
+
+.more-link {
+background: #243047;
+color: #ffffff;
+}
+
+/* =========================
+LOADING / EMPTY
+========================= */
 
 .loading,
 .empty {
-  padding: 40px;
-  text-align: center;
-  color: #9ba7ba;
+grid-column: 1 / -1;
+
+padding: 40px 20px;
+
+text-align: center;
+
+color: #9ba7ba;
+
+background: #101621;
+
+border: 1px solid #202838;
+
+border-radius: 14px;
+}
+
+/* =========================
+FOOTER
+========================= */
+
+footer {
+border-top: 1px solid #202838;
+
+background: #101621;
+
+padding: 18px;
+}
+
+.footer-inner {
+width: 100%;
+max-width: 1100px;
+
+margin: 0 auto;
+
+display: flex;
+
+align-items: center;
+justify-content: space-between;
+
+gap: 12px;
+
+color: #7f8ba0;
+
+font-size: 12px;
+}
+
+.footer-inner a {
+color: #cbd5e1;
+
+text-decoration: none;
+}
+
+/* =========================
+TABLET
+========================= */
+
+@media (max-width: 760px) {
+
+main {
+padding-left: 14px;
+padding-right: 14px;
+}
+
+.grid {
+grid-template-columns: 1fr;
+}
+
+}
+
+/* =========================
+MOBILE
+========================= */
+
+@media (max-width: 560px) {
+
+header {
+padding: 18px 13px;
+}
+
+.brand {
+font-size: 18px;
+}
+
+.sub {
+font-size: 12px;
+}
+
+main {
+padding:
+16px
+12px
+35px;
+}
+
+.hero {
+padding-top: 8px;
+}
+
+.hero h1 {
+font-size: 25px;
+}
+
+.hero p {
+font-size: 13px;
+}
+
+.hero-actions {
+flex-direction: column;
+}
+
+.video,
+.smart-link {
+width: 100%;
+}
+
+.card {
+padding: 13px;
+
+gap: 11px;
+
+border-radius: 14px;
+
+}
+
+.icon {
+width: 54px;
+height: 54px;
+
+flex-basis: 54px;
+
+border-radius: 12px;
+
+}
+
+.info h2 {
+font-size: 16px;
+}
+
+.info p {
+font-size: 12px;
+}
+
+.download,
+.direct {
+min-height: 38px;
+
+padding: 8px 12px;
+
+font-size: 13px;
+
+}
+
+.ad-wrap {
+margin-bottom: 18px;
+}
+
+.footer-inner {
+flex-direction: column;
+
+text-align: center;
+
+}
+
+}
+
+/* =========================
+VERY SMALL PHONES
+========================= */
+
+@media (max-width: 360px) {
+
+.card {
+flex-direction: column;
+}
+
+.icon {
+width: 50px;
+height: 50px;
+
+flex-basis: 50px;
+
+}
+
 }

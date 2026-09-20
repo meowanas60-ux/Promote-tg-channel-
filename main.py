@@ -53,6 +53,12 @@ def init_db():
     conn.close()
 
 
+# IMPORTANT:
+# Render uses gunicorn main:app.
+# Therefore the database must be initialized when this module is imported.
+init_db()
+
+
 @app.get("/api/health")
 def health():
 
@@ -87,9 +93,7 @@ def apps():
         limit = 30
 
 
-    conn = sqlite3.connect(
-        DB_PATH
-    )
+    conn = sqlite3.connect(DB_PATH)
 
     conn.row_factory = sqlite3.Row
 
@@ -157,9 +161,7 @@ def apps():
 @app.get("/api/apps/<int:message_id>")
 def app_details(message_id):
 
-    conn = sqlite3.connect(
-        DB_PATH
-    )
+    conn = sqlite3.connect(DB_PATH)
 
     conn.row_factory = sqlite3.Row
 
